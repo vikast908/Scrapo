@@ -1,6 +1,6 @@
 # Scrapo — Plan
 
-**Mission:** A Python, self-hosted, OSS scraping library purpose-built for AI / agent pipelines. Composes the strengths of every tool surveyed in `deep-research-report (1).md` while closing the six gaps the market currently leaves to the user.
+**Mission:** A Python, self-hosted, OSS scraping library purpose-built for AI / agent pipelines. Composes the strengths of every major scraper, agentic browser, crawler framework, and managed access API, while closing the six gaps the market currently leaves to the user.
 
 **Decisions locked in:**
 - Language: **Python 3.11+ / asyncio**
