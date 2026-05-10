@@ -176,3 +176,59 @@ async def test_cost_propagates_from_llm_response(cache):
         url="https://e.com/p", html="<html></html>", markdown="x", model=Product
     )
     assert result.cost_usd == 0.0042
+
+
+class Tag(BaseModel):
+    label: str
+
+
+class Catalog(BaseModel):
+    title: str
+    tags: list[Tag] = []
+
+
+CATALOG_HTML = """\
+<html><head><title>Catalog</title></head><body>
+<h1 id="t">My Catalog</h1>
+<ul class="tags">
+  <li><span class="lbl">alpha</span></li>
+  <li><span class="lbl">beta</span></li>
+  <li><span class="lbl">gamma</span></li>
+</ul>
+</body></html>
+"""
+
+
+def test_list_fields_detected():
+    from scrapo.extract.schema import list_fields
+
+    assert list_fields(Catalog) == {"tags": Tag}
+    assert list_fields(Product) == {}
+
+
+async def test_list_field_extracted_verified_and_cached(cache):
+    payload = (
+        '{"title": "My Catalog", "tags": [{"label": "alpha"}, {"label": "beta"}, {"label": "gamma"}]}\n'
+        'SELECTORS: {"title": "h1#t", "tags": {"__list__": "ul.tags > li", "label": "span.lbl"}}'
+    )
+    llm = FakeLLM(payload)
+    extractor = HybridExtractor(cache, llm=llm)
+
+    result = await extractor.extract(
+        url="https://e.com/cat", html=CATALOG_HTML, markdown="x", model=Catalog
+    )
+    assert result.method == "llm"
+    assert [t.label for t in result.data.tags] == ["alpha", "beta", "gamma"]
+
+    cached = await cache.get("https://e.com/cat", schema_hash(Catalog))
+    assert cached["tags"]["type"] == "list"
+    assert cached["tags"]["selector"] == "ul.tags > li"
+    assert cached["tags"]["extra"]["items"]["label"] == "span.lbl"
+
+    second = await extractor.extract(
+        url="https://e.com/cat", html=CATALOG_HTML, markdown="x", model=Catalog
+    )
+    assert llm.calls == 1
+    assert second.method == "selector"
+    assert [t.label for t in second.data.tags] == ["alpha", "beta", "gamma"]
+    assert second.data.title == "My Catalog"

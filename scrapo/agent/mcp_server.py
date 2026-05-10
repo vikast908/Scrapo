@@ -19,22 +19,24 @@ from scrapo.types import Budget, Tier
 async def _scrapo_scrape(args: dict[str, Any]) -> dict[str, Any]:
     max_tier = Tier(int(args.get("max_tier", 2)))
     budget = Budget(max_tier=max_tier)
-    return await scrape(
+    result = await scrape(
         args["url"],
         budget=budget,
         wait_for=args.get("wait_for"),
         screenshot=bool(args.get("screenshot", False)),
     )
+    return result.model_dump(mode="json")
 
 
 async def _scrapo_crawl(args: dict[str, Any]) -> dict[str, Any]:
     budget = Budget(max_tier=Tier.BROWSER, max_pages=int(args.get("max_pages", 100)))
-    return await crawl(
+    result = await crawl(
         args["seeds"],
         budget=budget,
         max_depth=int(args.get("max_depth", 2)),
         same_host_only=bool(args.get("same_host_only", True)),
     )
+    return result.model_dump(mode="json")
 
 
 async def _scrapo_replay(args: dict[str, Any]) -> dict[str, Any]:

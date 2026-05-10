@@ -1,4 +1,9 @@
-"""T2 / T3: Playwright-based browser fetch with optional stealth."""
+"""T2 / T3: Playwright-based browser fetch with optional stealth.
+
+Uses a shared :class:`~scrapo.access.browser_pool.BrowserPool` so a router that
+fetches many pages does not relaunch Chromium each time. Playwright (and the
+stealth plugin) are imported lazily so the package installs without them.
+"""
 
 from __future__ import annotations
 
@@ -6,21 +11,34 @@ import contextlib
 import time
 from typing import Any
 
+import structlog
+
 from scrapo.access.adapters.base import ProxyAdapter
+from scrapo.access.browser_pool import BrowserPool
 from scrapo.access.signals import annotate
 from scrapo.config import Config
 from scrapo.types import FetchResult, Tier
 
+log = structlog.get_logger(__name__)
+
 
 class BrowserTier:
-    """Tier 2/3 fetcher — JS rendering, optional stealth + residential proxy.
-
-    Imports Playwright lazily so the package installs without it.
-    """
+    """Tier 2/3 fetcher: JS rendering, optional stealth + residential proxy."""
 
     def __init__(self, config: Config, proxy_adapter: ProxyAdapter | None = None) -> None:
         self.config = config
         self.proxy_adapter = proxy_adapter
+        self._pool: BrowserPool | None = None
+
+    def _get_pool(self) -> BrowserPool:
+        if self._pool is None:
+            self._pool = BrowserPool(headless=True)
+        return self._pool
+
+    async def aclose(self) -> None:
+        if self._pool is not None:
+            await self._pool.aclose()
+            self._pool = None
 
     async def fetch(
         self,
@@ -37,79 +55,64 @@ class BrowserTier:
             raise ValueError(f"BrowserTier only handles BROWSER/BROWSER_STEALTH, got {tier}")
 
         try:
-            from playwright.async_api import async_playwright
+            import playwright.async_api  # noqa: F401 - availability check
         except ImportError as e:
             return FetchResult(
-                url=url,
-                final_url=url,
-                status=0,
-                html="",
-                headers={},
-                tier_used=tier,
-                blocked=True,
-                block_reason=f"playwright-missing:{e}",
+                url=url, final_url=url, status=0, html="", headers={}, tier_used=tier,
+                blocked=True, block_reason=f"playwright-missing:{e}",
             )
 
         proxy_settings: dict[str, str] | None = None
         proxy_region: str | None = None
         if self.proxy_adapter:
-            cfg = await self.proxy_adapter.get_proxy(geo or self.config.geo)
-            if cfg:
-                proxy_region = cfg.region
-                proxy_settings = self._parse_proxy(cfg.url)
+            pcfg = await self.proxy_adapter.get_proxy(geo or self.config.geo)
+            if pcfg:
+                proxy_region = pcfg.region
+                proxy_settings = self._parse_proxy(pcfg.url)
+
+        ctx_kwargs: dict[str, Any] = {
+            "user_agent": self.config.user_agent,
+            "viewport": {"width": 1366, "height": 900},
+        }
+        if proxy_settings:
+            ctx_kwargs["proxy"] = proxy_settings
+        if storage_state:
+            ctx_kwargs["storage_state"] = storage_state
 
         start = time.perf_counter()
-        async with async_playwright() as pw:
-            launch_kwargs: dict[str, Any] = {"headless": True}
-            if proxy_settings:
-                launch_kwargs["proxy"] = proxy_settings
-            browser = await pw.chromium.launch(**launch_kwargs)
-            try:
-                ctx_kwargs: dict[str, Any] = {
-                    "user_agent": self.config.user_agent,
-                    "viewport": {"width": 1366, "height": 900},
-                }
-                if storage_state:
-                    ctx_kwargs["storage_state"] = storage_state
-                context = await browser.new_context(**ctx_kwargs)
-                if cookies:
-                    await context.add_cookies(cookies)
+        async with self._get_pool().context(**ctx_kwargs) as context:
+            if cookies:
+                await context.add_cookies(cookies)
+            page = await context.new_page()
+            if tier is Tier.BROWSER_STEALTH:
+                await self._apply_stealth(page)
+            response = await page.goto(
+                url, timeout=self.config.request_timeout * 1000, wait_until="domcontentloaded"
+            )
+            if wait_for:
+                with contextlib.suppress(Exception):
+                    await page.wait_for_selector(wait_for, timeout=10_000)
 
-                if tier is Tier.BROWSER_STEALTH:
-                    await self._apply_stealth(context)
+            html = await page.content()
+            status = response.status if response else 0
+            headers = dict(response.headers) if response else {}
+            final_url = page.url
+            shot = await page.screenshot(full_page=False) if screenshot else None
+            elapsed_ms = (time.perf_counter() - start) * 1000.0
 
-                page = await context.new_page()
-                response = await page.goto(
-                    url,
-                    timeout=self.config.request_timeout * 1000,
-                    wait_until="domcontentloaded",
-                )
-                if wait_for:
-                    with contextlib.suppress(Exception):
-                        await page.wait_for_selector(wait_for, timeout=10_000)
-
-                html = await page.content()
-                status = response.status if response else 0
-                headers = dict(response.headers) if response else {}
-                final_url = page.url
-                shot = await page.screenshot(full_page=False) if screenshot else None
-                elapsed_ms = (time.perf_counter() - start) * 1000.0
-
-                result = FetchResult(
-                    url=url,
-                    final_url=final_url,
-                    status=status,
-                    html=html,
-                    headers=headers,
-                    tier_used=tier,
-                    elapsed_ms=elapsed_ms,
-                    proxy_region=proxy_region,
-                    screenshot_png=shot,
-                )
-                await context.close()
-                return annotate(result)
-            finally:
-                await browser.close()
+        return annotate(
+            FetchResult(
+                url=url,
+                final_url=final_url,
+                status=status,
+                html=html,
+                headers=headers,
+                tier_used=tier,
+                elapsed_ms=elapsed_ms,
+                proxy_region=proxy_region,
+                screenshot_png=shot,
+            )
+        )
 
     @staticmethod
     def _parse_proxy(proxy_url: str) -> dict[str, str]:
@@ -124,12 +127,15 @@ class BrowserTier:
         return out
 
     @staticmethod
-    async def _apply_stealth(context: Any) -> None:
-        try:
-            from playwright_stealth import StealthConfig, stealth_async
-        except ImportError:
+    async def _apply_stealth(page: Any) -> None:
+        """Best-effort: patch the page to look less automated. Versions of the
+        stealth plugin differ; try the common entry points and shrug off the rest."""
+        with contextlib.suppress(Exception):
+            from playwright_stealth import stealth_async
+
+            await stealth_async(page)
             return
-        # apply per-page on context creation
-        async def _on_page(page: Any) -> None:
-            await stealth_async(page, StealthConfig())
-        context.on("page", lambda page: page.context.loop.create_task(_on_page(page)))
+        with contextlib.suppress(Exception):
+            from playwright_stealth import Stealth
+
+            await Stealth().apply_stealth_async(page)

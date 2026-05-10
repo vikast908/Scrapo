@@ -107,13 +107,14 @@ Plus a feature nobody else ships: **deterministic replay** of every fetch, so ex
 
 ```
 scrapo/
-├── access/      # (1) 5-tier router + Bright Data / Oxylabs / Scrapfly / Zyte
-├── extract/     # (2) hybrid selector + LLM, model pinning, cost-aware budget
+├── access/      # (1) 5-tier router + pooled browser + Bright Data / Oxylabs / Scrapfly / Zyte
+├── extract/     # (2) hybrid selector + LLM (scalar & list fields), model pinning, cost-aware budget
 ├── shape/       # (3) selectolax markdown + heading chunker
 ├── replay/      # (4) snapshot store + field-level diff
 ├── policy/      # (5) robots, PII (flag or redact), geo, append-only audit
 ├── crawl/       # persistent SQLite queue + async scheduler
 ├── agent/       # (6) MCP server + tool schemas
+├── results.py   # typed ScrapeResult / CrawlResult / ExtractionView
 ├── security.py  # SSRF guard for fetch targets
 ├── _db.py       # tuned SQLite connections (WAL, busy timeout)
 ├── logging.py   # structlog setup for the CLI / MCP server
@@ -139,33 +140,38 @@ playwright install chromium
 import asyncio, scrapo
 
 async def main():
-    res = await scrapo.scrape("https://example.com/")
-    print(res["markdown"])
-    print("run_id:", res["run_id"])
+    res = await scrapo.scrape("https://example.com/")   # res is a typed ScrapeResult
+    print(res.markdown)
+    print("run_id:", res.run_id)
+    # res["markdown"] / res.get("status") still work too (back-compat with the 0.1 dict)
 
 asyncio.run(main())
 ```
 
-### 2. Typed extraction (LLM once, selectors forever)
+### 2. Typed extraction, including lists (LLM once, selectors forever)
 
 ```python
 import asyncio, scrapo
 from pydantic import BaseModel
 
-class Product(BaseModel):
+class Offer(BaseModel):
     name: str
     price: str
 
+class Listing(BaseModel):
+    page_title: str
+    offers: list[Offer] = []        # array fields become repeated-element extraction
+
 async def main():
-    res = await scrapo.scrape("https://example.com/widget", schema=Product)
-    print(res["extraction"]["data"])      # {'name': 'Widget Pro', 'price': '$42'}
-    print(res["extraction"]["method"])    # 'llm' on the first run, 'selector' after
-    print(res["cost_usd"])                # 0.0 once selectors are cached
+    res = await scrapo.scrape("https://example.com/shop", schema=Listing)
+    print(res.extraction.data)      # {'page_title': '...', 'offers': [{'name': ..., 'price': ...}, ...]}
+    print(res.extraction.method)    # 'llm' on the first run, 'selector' after
+    print(res.cost_usd)             # 0.0 once selectors are cached
 
 asyncio.run(main())
 ```
 
-> First call uses the LLM and **caches the selectors it learns** (keyed by host + schema). Every subsequent call against that host + schema uses cached selectors and **zero LLM tokens**. When the layout drifts, validation fails, Scrapo falls back to the LLM, re-derives selectors, and self-heals; a cache entry that keeps failing is evicted automatically.
+> First call uses the LLM and **caches the selectors it learns** (keyed by host + schema; for `list[Model]` fields it caches a container selector plus per-subfield selectors). Every subsequent call against that host + schema uses cached selectors and **zero LLM tokens**. When the layout drifts, validation fails, Scrapo falls back to the LLM, re-derives selectors, and self-heals; a cache entry that keeps failing is evicted automatically.
 
 ### 3. Recursive crawl
 
@@ -205,7 +211,7 @@ Escalation triggers: Cloudflare/Akamai/PerimeterX/DataDome/Distil fingerprints, 
 </details>
 
 <details>
-<summary><b>Hybrid selector + LLM extractor</b></summary>
+<summary><b>Hybrid selector + LLM extractor (scalar and list fields)</b></summary>
 
 ```
 cache hit + validates    -> return (method=selector, llm_calls=0, cost_usd=0)
@@ -213,7 +219,7 @@ miss / fail / over budget -> LLM with schema -> validate -> verify + persist sel
 repeated cache failures   -> evict the stale entry, re-derive next run
 ```
 
-The LLM is asked to return both the JSON payload *and* CSS selectors per field. Returned selectors are verified against the live HTML before being cached, so a hallucinated selector never poisons the cache. The cache is keyed by host (not registered domain), so `blog.example.com` and `shop.example.com` never collide.
+The LLM is asked to return both the JSON payload *and* CSS selectors per field. A scalar field gets a string selector; a `list[Model]` field gets `{"__list__": "<repeating element>", "<subfield>": "<selector relative to it>", ...}`, which Scrapo applies as `tree.css(container)` then per-subfield extraction inside each match. Returned selectors are verified against the live HTML before being cached, so a hallucinated selector never poisons the cache. The cache is keyed by host (not registered domain), so `blog.example.com` and `shop.example.com` never collide.
 
 </details>
 
@@ -283,6 +289,7 @@ diff 9f3e1c...  vs  abc123...
 - **SSRF guard.** Every fetch target is checked before a request goes out; loopback, link-local (including `169.254.169.254`), private RFC 1918 / ULA ranges, and well-known local hostnames are refused. Set `allow_private_hosts=True` (or `SCRAPO_ALLOW_PRIVATE_HOSTS=1`) for internal scraping. Crawl link discovery applies the same filter and skips obvious binary URLs.
 - **Bounded HTTP retries.** Transient `429 / 5xx` and transport errors are retried with exponential backoff and jitter before the router escalates to a heavier tier (`SCRAPO_HTTP_RETRIES`, default `2`).
 - **Concurrency-safe storage.** All SQLite stores (replay, selector cache, crawl queue) open in WAL mode with a busy timeout, so concurrent crawl workers do not trip over each other.
+- **Browser reuse.** A `TierRouter` launches one headless Chromium lazily and reuses it across fetches (proxy applied per context), so a crawl is not paying a cold browser launch per page. `TierRouter.aclose()` tears it down; `scrape()` and `crawl()` handle that for you.
 - **Cost accounting.** LLM cost is computed per call, recorded on the run, and enforceable via `Budget(max_llm_calls=..., max_cost_usd=...)`.
 - **PII handling.** Flag PII in the audit log (`SCRAPO_PII_FILTER=1`), or redact it from the stored snapshot, markdown, and chunks (`SCRAPO_REDACT_SNAPSHOTS=1`).
 - **Local UI hardening.** `scrapo serve` binds `127.0.0.1` by default, validates the `Host` header against an allowlist (anti DNS-rebinding), serializes scrapes, and warns loudly if you bind a public interface.
@@ -436,7 +443,7 @@ Issues and PRs welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the dev setup
 
 ## Project status
 
-Alpha. The public API (`scrape`, `extract`, `crawl`) is stable; tier escalation, model pinning, replay schema, and the MCP tool surface are stable. Parts that are intentionally lightweight today and slated for hardening: T4 agent driver, list/nested extraction, browser-context pooling, full Stagehand-style action caching, S3 snapshot adapter, hosted control plane.
+Alpha. The public API (`scrape`, `extract`, `crawl`) is stable; tier escalation, model pinning, replay schema, typed results, list extraction, and the MCP tool surface are stable. Parts that are intentionally lightweight today and slated for hardening: a batteries-included T4 agent driver, full Stagehand-style action caching, in-browser request interception, pagination/sitemap following, content-type routing (PDF/JSON/RSS), an S3 snapshot adapter, and a hosted control plane.
 
 See [CHANGELOG.md](CHANGELOG.md) for release notes.
 

@@ -34,6 +34,13 @@ class TierRouter:
         self.browser = BrowserTier(config, proxy_adapter)
         self.agent = AgentTier(config, agent_driver)
 
+    async def aclose(self) -> None:
+        """Release any pooled resources (browser, etc.). Safe to call repeatedly."""
+        for tier in (self.http, self.browser, self.agent):
+            close = getattr(tier, "aclose", None)
+            if close is not None:
+                await close()
+
     async def fetch(
         self,
         url: str,

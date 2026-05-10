@@ -26,13 +26,14 @@ from scrapo.config import Config
 from scrapo.crawl.dedup import UrlDeduper, normalize_url
 from scrapo.crawl.queue import RequestQueue
 from scrapo.policy.robots import RobotsGate
+from scrapo.results import ScrapeResult
 from scrapo.security import is_url_allowed
 from scrapo.types import Budget
 
 log = structlog.get_logger(__name__)
 
 
-PageHandler = Callable[[dict[str, Any]], Awaitable[None]]
+PageHandler = Callable[[ScrapeResult], Awaitable[None]]
 
 _SKIP_LINK_EXTENSIONS = (
     ".pdf", ".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".ico", ".bmp",
@@ -48,7 +49,7 @@ class CrawlScheduler:
     def __init__(
         self,
         config: Config,
-        scrape_fn: Callable[..., Awaitable[dict[str, Any]]],
+        scrape_fn: Callable[..., Awaitable[ScrapeResult]],
         robots: RobotsGate | None = None,
         crawl_id: str | None = None,
     ) -> None:

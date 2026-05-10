@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-05-10
+
+Capability release: typed results, list/nested extraction, and a reused browser.
+
+### Added
+
+- **Typed result objects** (`scrapo.results`): `scrape()` returns `ScrapeResult`, `crawl()` returns `CrawlResult`, and `extraction` on a result is an `ExtractionView`. They are Pydantic models, so you get attribute access (`result.markdown`), validation, and `result.model_dump()` for serialization. They also support `result["key"]`, `result.get("key", default)`, and `"key" in result` so code written against the 0.1/0.2 dict shape keeps working unchanged.
+- **List / nested extraction**: schema fields typed `list[SomeBaseModel]` are now extracted as repeated DOM elements. The LLM returns a container selector plus per-subfield selectors (`{"products": {"__list__": "ul.grid > li", "name": "h3", "price": ".price"}}`), those are verified against the live page, cached, and replayed on later runs with zero LLM tokens, exactly like scalar fields. `scrapo.extract.schema.list_fields()` exposes the detection.
+- **Browser-context pooling** (`scrapo.access.browser_pool.BrowserPool`): a `TierRouter` now lazily launches one Chromium and reuses it across fetches (proxy settings move to the context level so a single browser serves rotating proxies). A crawl no longer cold-launches a browser per page. `TierRouter.aclose()` tears it down; `scrape()` closes the router it creates, and `crawl()` shares one router across all pages. `scrape()` gained a `router=` keyword for callers that want to reuse one explicitly.
+- The flaky `playwright-stealth` integration is applied to the page before navigation (instead of via a context event that raced the first page) and tries both the old and new plugin entry points.
+
+### Changed
+
+- `scrape()` / `crawl()` return Pydantic models instead of plain `dict`. Dict-style read access still works; `isinstance(result, dict)` does not. The MCP server serializes results with `model_dump(mode="json")`.
+
 ## [0.2.0] - 2026-05-10
 
 Hardening release: makes the "cost-aware" and "production crawling" claims real,
@@ -73,6 +88,7 @@ Initial public release.
 - The `robots.txt` gate is opt-in: set `SCRAPO_RESPECT_ROBOTS=1` (or `Config(respect_robots=True)`) to enable it. You are responsible for complying with each site's terms of use and applicable law.
 - Alpha status: the public API and core subsystems are stable, but the T4 agent driver, full action caching, an S3 snapshot adapter, and a hosted control plane are intentionally lightweight or not yet implemented.
 
-[Unreleased]: https://github.com/vikast908/Scrapo/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/vikast908/Scrapo/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/vikast908/Scrapo/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/vikast908/Scrapo/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/vikast908/Scrapo/releases/tag/v0.1.0

@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import time
 from collections.abc import Awaitable, Callable
-from typing import Any
 
 import structlog
 from pydantic import BaseModel
@@ -25,6 +24,7 @@ from scrapo.policy.geo import GeoPolicy
 from scrapo.policy.pii import PiiClassifier, redact
 from scrapo.policy.robots import RobotsGate
 from scrapo.replay.store import ReplayStore
+from scrapo.results import ChunkView, CrawlResult, ExtractionView, ScrapeResult
 from scrapo.security import SsrfError, check_url
 from scrapo.shape.provenance import shape_document
 from scrapo.types import Budget, ChunkedDocument, ExtractionResult, FetchResult, RunRecord, Tier
@@ -47,16 +47,29 @@ async def scrape(
     screenshot: bool = False,
     storage_state: str | None = None,
     force_tier: Tier | None = None,
-) -> dict[str, Any]:
+    router: TierRouter | None = None,
+) -> ScrapeResult:
     """Single-URL scrape.
 
-    Returns a dict containing run_id, fetch metadata, markdown, chunks (with
-    provenance), and (when schema is given) typed extraction.
+    Returns a :class:`~scrapo.results.ScrapeResult` with run_id, fetch metadata,
+    markdown, chunks (with provenance), and (when ``schema`` is given) typed
+    extraction. Pass ``router`` to reuse one :class:`TierRouter` (and its browser
+    pool) across many calls; otherwise a fresh one is created and torn down here.
     """
     cfg = config or get_config()
     record = RunRecord.new(url)
     audit = AuditLog(cfg.audit_log, enabled=cfg.audit_enabled)
     replay = ReplayStore(cfg)
+
+    def _blocked(*, url_: str, status: int | None, tier: str | None, reason: str) -> ScrapeResult:
+        return ScrapeResult(
+            run_id=record.run_id,
+            url=url_,
+            status=status,
+            tier_used=tier,
+            blocked=True,
+            block_reason=reason,
+        )
 
     try:
         check_url(url, allow_private=cfg.allow_private_hosts)
@@ -65,14 +78,7 @@ async def scrape(
         record.finished_at = time.time()
         await audit.record("scrape.blocked", run_id=record.run_id, url=url, reason="ssrf")
         await replay.record(record, None, None)
-        return {
-            "run_id": record.run_id,
-            "url": url,
-            "status": None,
-            "tier_used": None,
-            "blocked": True,
-            "block_reason": record.error,
-        }
+        return _blocked(url_=url, status=None, tier=None, reason=record.error)
 
     if cfg.respect_robots:
         robots = RobotsGate(cfg.user_agent)
@@ -81,24 +87,22 @@ async def scrape(
             record.finished_at = time.time()
             await audit.record("scrape.blocked", run_id=record.run_id, url=url, reason="robots")
             await replay.record(record, None, None)
-            return {
-                "run_id": record.run_id,
-                "url": url,
-                "status": None,
-                "tier_used": None,
-                "blocked": True,
-                "block_reason": "robots",
-            }
+            return _blocked(url_=url, status=None, tier=None, reason="robots")
 
-    router = TierRouter(cfg, proxy_adapter=proxy_adapter)
-    fetch = await router.fetch(
-        url,
-        budget=budget,
-        wait_for=wait_for,
-        screenshot=screenshot,
-        storage_state=storage_state,
-        force_tier=force_tier,
-    )
+    own_router = router is None
+    router = router or TierRouter(cfg, proxy_adapter=proxy_adapter)
+    try:
+        fetch = await router.fetch(
+            url,
+            budget=budget,
+            wait_for=wait_for,
+            screenshot=screenshot,
+            storage_state=storage_state,
+            force_tier=force_tier,
+        )
+    finally:
+        if own_router:
+            await router.aclose()
     record.tier_used = fetch.tier_used
     record.proxy_region = fetch.proxy_region
     record.fetch_status = fetch.status
@@ -110,14 +114,9 @@ async def scrape(
             "scrape.blocked", run_id=record.run_id, url=url, reason=fetch.block_reason
         )
         await replay.record(record, fetch, None)
-        return {
-            "run_id": record.run_id,
-            "url": fetch.final_url,
-            "status": fetch.status,
-            "tier_used": fetch.tier_used.label,
-            "blocked": True,
-            "block_reason": record.error,
-        }
+        return _blocked(
+            url_=fetch.final_url, status=fetch.status, tier=fetch.tier_used.label, reason=record.error
+        )
 
     if geo_policy and not geo_policy.is_allowed(fetch.proxy_region):
         record.error = f"geo-policy-violation:{fetch.proxy_region}"
@@ -126,14 +125,9 @@ async def scrape(
             "scrape.geo_violation", run_id=record.run_id, url=url, region=fetch.proxy_region
         )
         await replay.record(record, fetch, None)
-        return {
-            "run_id": record.run_id,
-            "url": fetch.final_url,
-            "status": fetch.status,
-            "tier_used": fetch.tier_used.label,
-            "blocked": True,
-            "block_reason": record.error,
-        }
+        return _blocked(
+            url_=fetch.final_url, status=fetch.status, tier=fetch.tier_used.label, reason=record.error
+        )
 
     document = shape_document(fetch.html, url)
 
@@ -217,33 +211,37 @@ async def crawl(
     proxy_adapter: ProxyAdapter | None = None,
     llm_adapter: LLMAdapter | None = None,
     pin: PinnedModel | None = None,
-    on_page: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
-) -> dict[str, Any]:
+    on_page: Callable[[ScrapeResult], Awaitable[None]] | None = None,
+) -> CrawlResult:
     """Recursive crawl. Each page goes through the same pipeline as scrape()."""
     from scrapo.crawl.scheduler import CrawlScheduler
 
     cfg = config or get_config()
+    shared_router = TierRouter(cfg, proxy_adapter=proxy_adapter)
 
-    async def _scrape(url: str, *, budget: Budget | None = None) -> dict[str, Any]:
+    async def _scrape(url: str, *, budget: Budget | None = None) -> ScrapeResult:
         return await scrape(
             url,
             schema=schema,
             config=cfg,
             budget=budget,
-            proxy_adapter=proxy_adapter,
             llm_adapter=llm_adapter,
             pin=pin,
+            router=shared_router,
         )
 
     scheduler = CrawlScheduler(cfg, scrape_fn=_scrape)
-    stats = await scheduler.crawl(
-        seeds,
-        budget=budget,
-        max_depth=max_depth,
-        same_host_only=same_host_only,
-        on_page=on_page,
-    )
-    return {"crawl_id": scheduler.crawl_id, "stats": stats}
+    try:
+        stats = await scheduler.crawl(
+            seeds,
+            budget=budget,
+            max_depth=max_depth,
+            same_host_only=same_host_only,
+            on_page=on_page,
+        )
+    finally:
+        await shared_router.aclose()
+    return CrawlResult(crawl_id=scheduler.crawl_id, stats=stats)
 
 
 def _build_result(
@@ -251,33 +249,36 @@ def _build_result(
     fetch: FetchResult,
     document: ChunkedDocument,
     extraction: ExtractionResult | None,
-) -> dict[str, Any]:
-    out: dict[str, Any] = {
-        "run_id": record.run_id,
-        "url": fetch.final_url,
-        "status": fetch.status,
-        "tier_used": fetch.tier_used.label,
-        "proxy_region": fetch.proxy_region,
-        "blocked": fetch.blocked,
-        "block_reason": fetch.block_reason,
-        "elapsed_ms": fetch.elapsed_ms,
-        "title": document.title,
-        "markdown": document.markdown,
-        "html": fetch.html,
-        "chunks": [
-            {"text": c.text, "provenance": c.provenance.to_dict()} for c in document.chunks
-        ],
-    }
+) -> ScrapeResult:
+    extraction_view: ExtractionView | None = None
     if extraction is not None:
         data = extraction.data
         if hasattr(data, "model_dump"):
             data = data.model_dump()
-        out["extraction"] = {
-            "data": data,
-            "method": extraction.method,
-            "selectors_used": extraction.selectors_used,
-            "model_pinned": extraction.model_pinned,
-            "schema_version": extraction.schema_version,
-            "llm_calls": extraction.llm_calls,
-        }
-    return out
+        extraction_view = ExtractionView(
+            data=data,
+            method=extraction.method,
+            selectors_used=extraction.selectors_used,
+            model_pinned=extraction.model_pinned,
+            schema_version=extraction.schema_version,
+            llm_calls=extraction.llm_calls,
+            cost_usd=extraction.cost_usd,
+        )
+    return ScrapeResult(
+        run_id=record.run_id,
+        url=fetch.final_url,
+        status=fetch.status,
+        tier_used=fetch.tier_used.label,
+        proxy_region=fetch.proxy_region,
+        blocked=fetch.blocked,
+        block_reason=fetch.block_reason,
+        elapsed_ms=fetch.elapsed_ms,
+        title=document.title,
+        markdown=document.markdown,
+        html=fetch.html,
+        chunks=[
+            ChunkView(text=c.text, provenance=c.provenance.to_dict()) for c in document.chunks
+        ],
+        extraction=extraction_view,
+        cost_usd=record.cost_usd,
+    )

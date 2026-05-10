@@ -2,6 +2,7 @@
 
 from scrapo.api import crawl, extract, scrape
 from scrapo.config import Config
+from scrapo.results import ChunkView, CrawlResult, ExtractionView, ScrapeResult
 from scrapo.types import (
     Budget,
     ChunkedDocument,
@@ -12,16 +13,20 @@ from scrapo.types import (
     Tier,
 )
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     "Budget",
+    "ChunkView",
     "ChunkedDocument",
     "Config",
+    "CrawlResult",
     "ExtractionResult",
+    "ExtractionView",
     "FetchResult",
     "ProvenanceTag",
     "RunRecord",
+    "ScrapeResult",
     "Tier",
     "crawl",
     "extract",

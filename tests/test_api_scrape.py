@@ -5,7 +5,8 @@ from __future__ import annotations
 import pytest
 from pydantic import BaseModel
 
-from scrapo.api import scrape
+from scrapo.api import crawl, scrape
+from scrapo.results import CrawlResult, ScrapeResult
 from scrapo.types import Budget, FetchResult, Tier
 
 PAGE = """\
@@ -141,3 +142,25 @@ async def test_scrape_short_circuits_on_fetch_block(isolated_config, monkeypatch
     assert result["block_reason"] == "http-403"
     assert result["status"] == 403
     assert "markdown" not in result
+
+
+@pytest.mark.asyncio
+async def test_scrape_returns_typed_result(isolated_config, monkeypatch):
+    _stub_router(monkeypatch, FakeHttp())
+    result = await scrape("https://example.com/", config=isolated_config)
+    assert isinstance(result, ScrapeResult)
+    assert result.markdown == result["markdown"]
+    assert "markdown" in result
+    assert "extraction" not in result  # None when no schema
+    dumped = result.model_dump()
+    assert dumped["run_id"] == result.run_id
+
+
+@pytest.mark.asyncio
+async def test_crawl_returns_typed_result(isolated_config, monkeypatch):
+    _stub_router(monkeypatch, FakeHttp())
+    result = await crawl(["https://example.com/"], config=isolated_config, max_depth=0)
+    assert isinstance(result, CrawlResult)
+    assert result.crawl_id
+    assert sum(result.stats.values()) >= 1
+    assert result["stats"] == result.stats

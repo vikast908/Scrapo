@@ -36,6 +36,10 @@ class AgentTier:
         self.config = config
         self.driver = driver
 
+    async def aclose(self) -> None:
+        """No persistent resources today; defined so TierRouter.aclose can call it."""
+        return
+
     async def fetch(
         self,
         url: str,

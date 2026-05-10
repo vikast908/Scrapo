@@ -15,6 +15,7 @@ import structlog
 
 from scrapo.api import scrape
 from scrapo.config import Config
+from scrapo.results import ScrapeResult
 from scrapo.types import Budget, Tier
 
 log = structlog.get_logger(__name__)
@@ -38,7 +39,7 @@ def normalize_target(value: str) -> str:
     return target
 
 
-def public_result(result: dict[str, Any]) -> dict[str, Any]:
+def public_result(result: ScrapeResult) -> dict[str, Any]:
     """Return the result fields the browser UI needs, excluding raw HTML."""
     chunks = result.get("chunks") or []
     public_chunks: list[dict[str, Any]] = []

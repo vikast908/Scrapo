@@ -22,7 +22,7 @@ If you have ever copied information off a web page by hand, or wished a program 
 ## What's possible
 
 - Get clean, readable text out of most public web pages.
-- Get structured data (the specific fields you define) out of pages, reliably and repeatably.
+- Get structured data (the specific fields you define) out of pages, reliably and repeatably, including lists (every product on a listing page, every row of a table) when you describe them as a list of records.
 - Scrape JavaScript-heavy pages that do not work with a plain download.
 - Get past light anti-bot defenses on your own; get past tougher ones by plugging in a commercial proxy service (Bright Data, Oxylabs, Scrapfly, and Zyte are supported out of the box).
 - Crawl a whole site: follow links automatically, with limits on depth and page count, skipping duplicates.
@@ -40,9 +40,8 @@ If you have ever copied information off a web page by hand, or wished a program 
 - **It is not a no-code, point-and-click product.** You need to write a little Python or use the command line. The built-in web page is intentionally minimal; it is for trying things, not a polished app.
 - **It cannot magically beat every site's defenses.** Aggressive bot protection and CAPTCHAs are genuinely hard. A proxy provider helps a lot, but nothing is guaranteed. The most advanced mode (an AI that drives a browser through logins and CAPTCHAs) exists but is lightweight and experimental today, and ships without a default driver.
 - **It will not log into sites for you by default.** You can supply credentials or a saved login session, but automated login flows are still experimental.
-- **There is no built-in list/table extraction yet.** Today it extracts one record per page well; pulling every row out of a listing page is on the roadmap, not in the box.
 - **There is no hosted dashboard or scheduler.** Scrapo does not run your jobs in the cloud, send alerts, or give you a web console to manage everything. You run and schedule it yourself.
-- **It is alpha software.** The core works and is stable, but expect rough edges. Some pieces (browser pooling, cloud snapshot storage, advanced action caching, a hosted control plane) are planned, not built.
+- **It is alpha software.** The core works and is stable, but expect rough edges. Some pieces (a ready-made agent driver, in-browser request interception, following "next page" links and sitemaps, cloud snapshot storage, advanced action caching, a hosted control plane) are planned, not built.
 - **AI extraction costs money.** The first run on a new site (or after a layout change) calls a paid AI model. Scrapo is designed to minimize this (most runs use the free cached recipe) but it is not literally free.
 - **It is not legal advice or a compliance guarantee.** The robots rules, personal-data flagging, geo limits, and audit log are *tools* to help you scrape responsibly. You are still responsible for following each site's terms and the law. (Note: robots-rule enforcement is off by default; you have to turn it on.)
 - **It is Python-only.** No JavaScript, Java, Go, etc. versions. Requires Python 3.11 or newer.
