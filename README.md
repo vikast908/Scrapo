@@ -405,6 +405,8 @@ The suite is **fully offline** — no test hits the network or a paid LLM. It co
 
 Alpha. The public API (`scrape`, `extract`, `crawl`) is stable; tier escalation, model pinning, replay schema, and the MCP tool surface are stable. Parts that are intentionally lightweight today and slated for hardening: T4 agent driver, full Stagehand-style action caching, S3 snapshot adapter, hosted control plane.
 
+See [CHANGELOG.md](CHANGELOG.md) for release notes.
+
 ---
 
 ## License
