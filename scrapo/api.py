@@ -54,15 +54,23 @@ async def scrape(
     cfg = config or get_config()
     record = RunRecord.new(url)
     audit = AuditLog(cfg.audit_log, enabled=cfg.audit_enabled)
-    robots = RobotsGate(cfg.user_agent, enabled=cfg.respect_robots)
     replay = ReplayStore(cfg)
 
-    if not await robots.can_fetch(url):
-        record.error = "blocked-by-robots"
-        record.finished_at = time.time()
-        await audit.record("scrape.blocked", run_id=record.run_id, url=url, reason="robots")
-        await replay.record(record, None, None)
-        return {"run_id": record.run_id, "blocked": True, "reason": "robots"}
+    if cfg.respect_robots:
+        robots = RobotsGate(cfg.user_agent)
+        if not await robots.can_fetch(url):
+            record.error = "blocked-by-robots"
+            record.finished_at = time.time()
+            await audit.record("scrape.blocked", run_id=record.run_id, url=url, reason="robots")
+            await replay.record(record, None, None)
+            return {
+                "run_id": record.run_id,
+                "url": url,
+                "status": None,
+                "tier_used": None,
+                "blocked": True,
+                "block_reason": "robots",
+            }
 
     router = TierRouter(cfg, proxy_adapter=proxy_adapter)
     fetch = await router.fetch(
@@ -84,7 +92,14 @@ async def scrape(
             "scrape.geo_violation", run_id=record.run_id, url=url, region=fetch.proxy_region
         )
         await replay.record(record, fetch, None)
-        return {"run_id": record.run_id, "blocked": True, "reason": record.error}
+        return {
+            "run_id": record.run_id,
+            "url": fetch.final_url,
+            "status": fetch.status,
+            "tier_used": fetch.tier_used.label,
+            "blocked": True,
+            "block_reason": record.error,
+        }
 
     document = shape_document(fetch.html, url)
 

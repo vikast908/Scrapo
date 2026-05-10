@@ -69,7 +69,7 @@ Scrapo is a Python library that fuses four worlds the rest of the market keeps s
 
 | 🪪 **Provenance** | 🎞️ **Deterministic replay** | 🛂 **Compliance built-in** |
 |:---:|:---:|:---:|
-| Every chunk carries URL, selector path, byte range, heading trail | Re-extract from archived HTML 6 months later. Diff fields between any two runs | robots gate, regex+Luhn PII, geo allow/deny, append-only audit log |
+| Every chunk carries URL, selector path, byte range, heading trail | Re-extract from archived HTML 6 months later. Diff fields between any two runs | optional robots gate, regex+Luhn PII, geo allow/deny, append-only audit log |
 
 </div>
 
@@ -273,7 +273,7 @@ diff 9f3e1c…  vs  abc123…
 <details>
 <summary><b>🛂 Built-in compliance layer</b></summary>
 
-- `robots.txt` parser with per-origin caching
+- Optional `robots.txt` parser with per-origin caching
 - Regex PII classifier (email, phone, SSN, credit card with Luhn, IPv4, IBAN, passport)
 - Geo policy with EU-only preset (`GeoPolicy.eu_only()`) plus custom allow/deny lists
 - Append-only JSONL audit log of every scrape, block, geo violation, PII detection
@@ -374,7 +374,7 @@ Every default is overridable via env var:
 | `SCRAPO_USER_AGENT` | `scrapo/0.1` | UA for HTTP and robots |
 | `SCRAPO_TIMEOUT` | `30` | request timeout (s) |
 | `SCRAPO_CONCURRENCY` | `8` | crawl concurrency |
-| `SCRAPO_RESPECT_ROBOTS` | `1` | `0` to disable robots gate |
+| `SCRAPO_RESPECT_ROBOTS` | `0` | `1` to enable robots gate |
 | `SCRAPO_PII_FILTER` | `0` | `1` to flag PII in audit log |
 | `SCRAPO_PROXY_ADAPTER` | _unset_ | default registered adapter name |
 | `SCRAPO_LLM_ADAPTER` | `anthropic` | default LLM provider |

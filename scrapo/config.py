@@ -11,6 +11,7 @@ from platformdirs import user_data_dir
 from scrapo.types import Tier
 
 _APP_NAME = "scrapo"
+_DEFAULT_USER_AGENT = "scrapo/0.1 (+https://github.com/anthropics/scrapo)"
 
 
 def _default_data_dir() -> Path:
@@ -23,11 +24,11 @@ def _default_data_dir() -> Path:
 @dataclass(slots=True)
 class Config:
     data_dir: Path = field(default_factory=_default_data_dir)
-    user_agent: str = "scrapo/0.1 (+https://github.com/anthropics/scrapo)"
+    user_agent: str = _DEFAULT_USER_AGENT
     request_timeout: float = 30.0
     max_concurrency: int = 8
     default_max_tier: Tier = Tier.BROWSER
-    respect_robots: bool = True
+    respect_robots: bool = False
     enable_pii_filter: bool = False
     audit_enabled: bool = True
     snapshot_html: bool = True
@@ -65,10 +66,10 @@ class Config:
     @classmethod
     def from_env(cls) -> Config:
         return cls(
-            user_agent=os.environ.get("SCRAPO_USER_AGENT", cls.user_agent),
+            user_agent=os.environ.get("SCRAPO_USER_AGENT", _DEFAULT_USER_AGENT),
             request_timeout=float(os.environ.get("SCRAPO_TIMEOUT", "30")),
             max_concurrency=int(os.environ.get("SCRAPO_CONCURRENCY", "8")),
-            respect_robots=os.environ.get("SCRAPO_RESPECT_ROBOTS", "1") == "1",
+            respect_robots=os.environ.get("SCRAPO_RESPECT_ROBOTS", "0") == "1",
             enable_pii_filter=os.environ.get("SCRAPO_PII_FILTER", "0") == "1",
             proxy_adapter=os.environ.get("SCRAPO_PROXY_ADAPTER") or None,
             llm_adapter=os.environ.get("SCRAPO_LLM_ADAPTER", "anthropic"),

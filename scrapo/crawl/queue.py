@@ -89,13 +89,18 @@ class RequestQueue:
             row = await cur.fetchone()
             if not row:
                 return None
+            claimed_at = time.time()
             await db.execute(
                 "UPDATE requests SET status='in_flight', claimed_at=?, attempts=attempts+1 "
                 "WHERE id=?",
-                (time.time(), row["id"]),
+                (claimed_at, row["id"]),
             )
             await db.commit()
-            return dict(row)
+            data = dict(row)
+            data["status"] = "in_flight"
+            data["claimed_at"] = claimed_at
+            data["attempts"] += 1
+            return data
 
     async def complete(self, request_id: int) -> None:
         await self._ensure()

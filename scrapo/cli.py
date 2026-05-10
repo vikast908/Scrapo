@@ -27,7 +27,8 @@ console = Console()
 def _load_config(data_dir: Path | None) -> Config:
     cfg = Config.from_env()
     if data_dir:
-        cfg = Config(data_dir=data_dir)
+        cfg.data_dir = Path(data_dir).expanduser()
+        cfg.data_dir.mkdir(parents=True, exist_ok=True)
     set_config(cfg)
     return cfg
 
@@ -47,12 +48,12 @@ def scrape(
     budget = Budget(max_tier=Tier(max_tier))
     result = asyncio.run(scrape_api(url, budget=budget, wait_for=wait_for, screenshot=screenshot))
     if result.get("blocked"):
-        console.print(f"[red]blocked:[/red] {result.get('reason')}")
+        console.print(f"[red]blocked:[/red] {result.get('block_reason')}")
         raise typer.Exit(code=2)
     console.print(
-        f"[green]✓[/green] {result['url']}  "
+        f"[green]OK[/green] {result['url']}  "
         f"[dim]tier={result['tier_used']} status={result['status']} "
-        f"chunks={len(result['chunks'])} run={result['run_id'][:12]}…[/dim]"
+        f"chunks={len(result['chunks'])} run={result['run_id'][:12]}...[/dim]"
     )
     if out_md:
         out_md.write_text(result["markdown"], encoding="utf-8")
@@ -127,7 +128,7 @@ def replay(
         raise typer.Exit(code=2)
     doc = shape_document(html, record["url"])
     console.print(
-        f"[green]✓[/green] replay {run_id[:12]}  "
+        f"[green]OK[/green] replay {run_id[:12]}  "
         f"[dim]url={record['url']} chars={len(doc.markdown)}[/dim]"
     )
     console.print(doc.markdown[:4000])
@@ -181,6 +182,26 @@ def adapters() -> None:
     bd(); ox(); sf(); zy()
     for name in registry.list_names():
         console.print(f"- {name}")
+
+
+@app.command()
+def serve(
+    host: Annotated[str, typer.Option(help="Host to bind")] = "127.0.0.1",
+    port: Annotated[int, typer.Option(help="Port to bind")] = 8787,
+    max_tier: Annotated[int, typer.Option(help="Default max tier for UI scrapes")] = 1,
+    data_dir: Annotated[Path | None, typer.Option(help="Override data dir")] = None,
+) -> None:
+    """Run the local browser UI."""
+    cfg = _load_config(data_dir)
+    from scrapo.web import serve as serve_ui
+
+    serve_ui(
+        cfg,
+        host=host,
+        port=port,
+        max_tier=Tier(max_tier),
+        on_ready=lambda url: console.print(f"[green]Scrapo View[/green] listening at {url}"),
+    )
 
 
 def main() -> None:

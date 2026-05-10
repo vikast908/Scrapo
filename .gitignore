@@ -45,6 +45,7 @@ scrapo_data/
 *.sqlite-*
 snapshots/
 audit.log
+*.log
 
 .claude/
 .claude*

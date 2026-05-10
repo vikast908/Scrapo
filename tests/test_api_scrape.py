@@ -50,6 +50,27 @@ async def test_scrape_returns_markdown_and_run_id(isolated_config, monkeypatch):
     assert result["run_id"]
 
 
+@pytest.mark.asyncio
+async def test_scrape_robots_blocked_result_includes_url(isolated_config, monkeypatch):
+    from scrapo import api
+
+    class BlockedRobots:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def can_fetch(self, url):
+            return False
+
+    monkeypatch.setattr(api, "RobotsGate", BlockedRobots)
+    isolated_config.respect_robots = True
+
+    result = await scrape("https://www.linkedin.com/", config=isolated_config)
+
+    assert result["blocked"] is True
+    assert result["url"] == "https://www.linkedin.com/"
+    assert result["block_reason"] == "robots"
+
+
 class TinyDoc(BaseModel):
     title: Optional[str] = None
 
