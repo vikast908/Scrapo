@@ -107,7 +107,7 @@ Plus a feature nobody else ships: **deterministic replay** of every fetch, so ex
 
 ```
 scrapo/
-├── access/      # (1) 5-tier router + pooled browser + request interception + agent driver + proxy adapters
+├── access/      # (1) 5-tier router + pooled browser + request interception + agent driver + action cache + proxy adapters
 ├── extract/     # (2) hybrid selector + LLM (scalar & list fields), model pinning, cost-aware budget
 ├── shape/       # (3) markdown + heading chunker + content-type dispatch (HTML / JSON / feed / PDF / text)
 ├── replay/      # (4) SQLite metadata + pluggable snapshot store (local or S3) + field-level diff
@@ -204,9 +204,9 @@ scrapo diff <run_a> <run_b>    # field-level diff
 | **T1** `HTTP_SESSIONED` | + browser-like headers/cookies | soft anti-bot |
 | **T2** `BROWSER` | Playwright headless | JS-rendered pages, SPA shells |
 | **T3** `BROWSER_STEALTH` | + stealth + residential proxy | hard anti-bot |
-| **T4** `AGENT` | LLM-driven multi-step browser via a pluggable `AgentDriver` (a reference `LLMAgentDriver` ships in; `SCRAPO_AGENT_DRIVER=llm`) | logins, captchas, flows |
+| **T4** `AGENT` | LLM-driven multi-step browser via a pluggable `AgentDriver` (a reference `LLMAgentDriver` ships in; `SCRAPO_AGENT_DRIVER=llm`), with **action caching** so a repeated goal replays without the LLM | logins, captchas, flows |
 
-Escalation triggers: Cloudflare/Akamai/PerimeterX/DataDome/Distil fingerprints, HTTP `403 / 429 / 503`, empty body, missing required schema fields, and unrendered single-page-app shells (lots of script, almost no rendered text). `Budget(max_tier=..., max_llm_calls=..., max_cost_usd=...)` caps how far it goes. The browser tiers block images/fonts/media/css by default and capture JSON XHR/fetch responses onto the result.
+Escalation triggers: Cloudflare/Akamai/PerimeterX/DataDome/Distil fingerprints, HTTP `403 / 429 / 503`, empty body, missing required schema fields, and unrendered single-page-app shells (lots of script, almost no rendered text). `Budget(max_tier=..., max_llm_calls=..., max_cost_usd=...)` caps how far it goes. The browser tiers block images/fonts/media/css by default and capture JSON XHR/fetch responses onto the result. The Tier-4 driver records the action sequence it used to reach a goal on a host (`agent_actions.sqlite`) and replays it on later runs with zero LLM tokens, self-healing back to the model only when a recorded step no longer applies (`SCRAPO_AGENT_ACTION_CACHE=0` to disable).
 
 </details>
 
@@ -430,6 +430,7 @@ Every default is overridable via env var:
 | `SCRAPO_BROWSER_BLOCK_RESOURCES` | `1` | `0` to let the browser tier load images/fonts/media/css |
 | `SCRAPO_BROWSER_CAPTURE_XHR` | `1` | `0` to skip capturing JSON XHR/fetch responses |
 | `SCRAPO_AGENT_DRIVER` | unset | `llm` to enable the built-in Tier-4 agent driver |
+| `SCRAPO_AGENT_ACTION_CACHE` | `1` | `0` to disable recording/replaying Tier-4 agent action sequences |
 | `SCRAPO_PROXY_ADAPTER` | unset | default registered adapter name |
 | `SCRAPO_LLM_ADAPTER` | `anthropic` | default LLM provider |
 | `SCRAPO_LLM_MODEL` | `claude-opus-4-7` | default model id |
@@ -451,7 +452,7 @@ ruff check .
 mypy scrapo/
 ```
 
-The suite is **fully offline**; no test hits the network or a paid LLM. It covers signals (including SPA-shell detection), SSRF, the HTTP retry path, shape, extract (cache eviction, budget, cost), replay, policy, dedup, queue, router, adapters, the local web UI, config, and end-to-end scrape with monkeypatched fetchers.
+The suite is **fully offline**; no test hits the network or a paid LLM. It covers signals (including SPA-shell detection), SSRF, the HTTP retry path, shape, extract (cache eviction, budget, cost), replay, policy, dedup, queue, router, adapters, the agent driver and its action cache (record / replay / self-heal / eviction with fake page + scripted LLM), the local web UI, config, and end-to-end scrape with monkeypatched fetchers.
 
 ---
 
@@ -463,7 +464,7 @@ Issues and PRs welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the dev setup
 
 ## Project status
 
-Alpha. The public API (`scrape`, `extract`, `crawl`) is stable, as are tier escalation, model pinning, replay schema, typed results, list extraction, content-type routing, the pluggable snapshot store, and the MCP tool surface. The reference Tier-4 agent driver and the in-browser request interception are functional but lightly exercised (a real browser is needed to validate them end to end). Still open: recording and safely replaying agent action sequences (Stagehand-style action caching), deeper proxy rotation / health, and a hosted control plane (which would be a separate deployable service rather than part of the library).
+Alpha. The public API (`scrape`, `extract`, `crawl`) is stable, as are tier escalation, model pinning, replay schema, typed results, list extraction, content-type routing, the pluggable snapshot store, and the MCP tool surface. The reference Tier-4 agent driver — now with action caching (record the steps to a goal, replay them token-free, self-heal back to the LLM when a step breaks) — and the in-browser request interception are functional but lightly exercised (a real browser is needed to validate them end to end). Still open: deeper proxy rotation / health, and a hosted control plane (which would be a separate deployable service rather than part of the library).
 
 See [CHANGELOG.md](CHANGELOG.md) for release notes.
 

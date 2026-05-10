@@ -11,15 +11,22 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
+from scrapo.access.action_cache import ActionCache
 from scrapo.access.signals import annotate
 from scrapo.config import Config
 from scrapo.types import FetchResult, Tier
 
 
 class AgentDriver(Protocol):
-    """Pluggable agent loop — receives a Playwright page, returns when goal is reached."""
+    """Pluggable agent loop — receives a Playwright page, returns when goal is reached.
 
-    async def run(self, page: Any, goal: str) -> dict[str, Any]: ...
+    ``cache`` is an optional action recorder/replayer the tier passes in from
+    config; a driver that doesn't do action caching can ignore it.
+    """
+
+    async def run(
+        self, page: Any, goal: str, *, cache: ActionCache | None = None
+    ) -> dict[str, Any]: ...
 
 
 GoalFn = Callable[[str], Awaitable[bool]]
@@ -35,6 +42,9 @@ class AgentTier:
     ) -> None:
         self.config = config
         self.driver = driver
+        self.action_cache: ActionCache | None = (
+            ActionCache(config.action_cache_db) if config.agent_action_cache else None
+        )
 
     async def aclose(self) -> None:
         """No persistent resources today; defined so TierRouter.aclose can call it."""
@@ -83,7 +93,7 @@ class AgentTier:
             page = await context.new_page()
             try:
                 await page.goto(url, timeout=self.config.request_timeout * 1000)
-                await self.driver.run(page, goal)
+                await self.driver.run(page, goal, cache=self.action_cache)
                 html = await page.content()
                 final_url = page.url
                 elapsed_ms = (time.perf_counter() - start) * 1000.0

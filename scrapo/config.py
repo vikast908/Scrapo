@@ -40,6 +40,7 @@ class Config:
     http_retries: int = 2
     proxy_adapter: str | None = None
     agent_driver: str | None = None  # "llm" to use the built-in LLMAgentDriver at tier 4
+    agent_action_cache: bool = True  # record/replay agent action sequences at tier 4
     llm_adapter: str | None = "anthropic"
     llm_model: str = "claude-opus-4-7"
     geo: str | None = None
@@ -59,6 +60,10 @@ class Config:
     @property
     def crawl_queue_db(self) -> Path:
         return self.data_dir / "queue.sqlite"
+
+    @property
+    def action_cache_db(self) -> Path:
+        return self.data_dir / "agent_actions.sqlite"
 
     @property
     def audit_log(self) -> Path:
@@ -86,6 +91,7 @@ class Config:
             http_retries=int(os.environ.get("SCRAPO_HTTP_RETRIES", "2")),
             proxy_adapter=os.environ.get("SCRAPO_PROXY_ADAPTER") or None,
             agent_driver=os.environ.get("SCRAPO_AGENT_DRIVER") or None,
+            agent_action_cache=os.environ.get("SCRAPO_AGENT_ACTION_CACHE", "1") == "1",
             llm_adapter=os.environ.get("SCRAPO_LLM_ADAPTER", "anthropic"),
             llm_model=os.environ.get("SCRAPO_LLM_MODEL", "claude-opus-4-7"),
             geo=os.environ.get("SCRAPO_GEO") or None,

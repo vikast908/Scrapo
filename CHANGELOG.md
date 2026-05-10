@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-05-10
+
+Roadmap release: Stagehand-style action caching for the Tier-4 agent driver — the
+last open item from the 0.4.0 list. (A hosted control plane stays out of scope; it
+is a deployable service, not a library feature.)
+
+### Added
+
+- **Agent action caching** (`scrapo.access.action_cache.ActionCache`): the Tier-4 agent driver now records the ordered actions it took to reach a goal on a host. Later runs with the same goal replay that script directly — zero LLM tokens — and only fall back to the model if a replayed step no longer applies (its element is gone, a navigation fails, …). Recordings are keyed by `(host, goal_hash)` in `agent_actions.sqlite`, with a per-key `failure_count` so a stale script is evicted after `cache_max_failures` (default 2) failed replays instead of being retried forever. Each recorded click/type carries a best-effort durable CSS selector plus the element's text/tag, so replay survives changing snapshot indices; `AgentTier` wires the cache in from config. On by default — disable with `Config(agent_action_cache=False)` or `SCRAPO_AGENT_ACTION_CACHE=0`. The snapshot JS the driver injects now also returns a `sel` (CSS path) for each element, and `LLMAgentDriver.run`'s result dict gains a `replayed` flag.
+- New config / env var: `agent_action_cache` / `SCRAPO_AGENT_ACTION_CACHE`; new `Config.action_cache_db` path.
+
+### Changed
+
+- `AgentDriver.run` (the Tier-4 driver protocol) gained a keyword-only `cache: ActionCache | None = None` parameter; `AgentTier` passes its configured cache through. A custom driver that ignores action caching can leave the parameter unused, but must accept it.
+
+### Not in this release
+
+- A hosted control plane is a deployable service rather than a library feature and is out of scope here.
+
 ## [0.4.0] - 2026-05-10
 
 Roadmap release: content-type routing, sitemap + pagination, in-browser request
