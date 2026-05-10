@@ -20,13 +20,13 @@
 [![Gemini](https://img.shields.io/badge/LLM-Gemini-4285F4?style=flat-square&logo=google)](https://ai.google.dev/)
 [![MCP](https://img.shields.io/badge/protocol-MCP-7c3aed?style=flat-square)](https://modelcontextprotocol.io)
 
-[Quickstart](#-quickstart) • [Architecture](#-architecture) • [Features](#-features) • [Why Scrapo](#-why-scrapo) • [CLI](#-cli) • [MCP](#-use-as-an-mcp-server)
+[Quickstart](#quickstart) • [Architecture](#architecture) • [Features](#features) • [Why Scrapo](#why-scrapo) • [CLI](#cli) • [MCP](#use-as-an-mcp-server)
 
 </div>
 
 ---
 
-## ✨ What is Scrapo?
+## What is Scrapo?
 
 Scrapo is a Python library that fuses four worlds the rest of the market keeps separate:
 
@@ -34,22 +34,22 @@ Scrapo is a Python library that fuses four worlds the rest of the market keeps s
 <tr>
 <td align="center" width="25%">
 
-🧠<br>**AI-native ingestion**<br>*markdown, schema JSON*
+**AI-native ingestion**<br>*markdown, schema JSON*
 
 </td>
 <td align="center" width="25%">
 
-🤖<br>**Agentic browsing**<br>*observe / act / extract*
+**Agentic browsing**<br>*observe / act / extract*
 
 </td>
 <td align="center" width="25%">
 
-🕷️<br>**Production crawling**<br>*queues, dedup, scaling*
+**Production crawling**<br>*queues, dedup, scaling*
 
 </td>
 <td align="center" width="25%">
 
-🛡️<br>**Managed access**<br>*proxies, anti-bot, geo*
+**Managed access**<br>*proxies, anti-bot, geo*
 
 </td>
 </tr>
@@ -57,17 +57,19 @@ Scrapo is a Python library that fuses four worlds the rest of the market keeps s
 
 …with a feature nobody else ships: **deterministic replay** of every fetch, so extraction drift is auditable.
 
+> Not a developer? **[layman.md](layman.md)** explains what Scrapo does — and what it can't do — in plain English.
+
 ---
 
-## 🎯 Why Scrapo
+## Why Scrapo
 
 <div align="center">
 
-| 🔁 **5-tier router** | 🧬 **Hybrid extractor** | 📌 **Model pinning** |
+| **5-tier router** | **Hybrid extractor** | **Model pinning** |
 |:---:|:---:|:---:|
 | Auto-escalates HTTP → browser → stealth → agent on real failure signals only | Selector-cheap by default; falls back to LLM and self-heals | Strict mode refuses unpinned LLM extraction — extraction can't silently drift |
 
-| 🪪 **Provenance** | 🎞️ **Deterministic replay** | 🛂 **Compliance built-in** |
+| **Provenance** | **Deterministic replay** | **Compliance built-in** |
 |:---:|:---:|:---:|
 | Every chunk carries URL, selector path, byte range, heading trail | Re-extract from archived HTML 6 months later. Diff fields between any two runs | optional robots gate, regex+Luhn PII, geo allow/deny, append-only audit log |
 
@@ -75,7 +77,7 @@ Scrapo is a Python library that fuses four worlds the rest of the market keeps s
 
 ---
 
-## 🏗️ Architecture
+## Architecture
 
 ```
                  ┌─────────────────────────────────────────────┐
@@ -112,12 +114,13 @@ scrapo/
 ├── crawl/       # persistent SQLite queue + async scheduler
 ├── agent/       # ⑥ MCP server + tool schemas
 ├── api.py       # public scrape / extract / crawl
+├── web.py       # local browser UI (scrapo serve)
 └── cli.py       # Typer CLI
 ```
 
 ---
 
-## ⚡ Quickstart
+## Quickstart
 
 ```bash
 pip install scrapo
@@ -126,7 +129,7 @@ pip install "scrapo[browser,anthropic,mcp]"
 playwright install chromium
 ```
 
-### 1️⃣ Scrape one URL
+### 1. Scrape one URL
 
 ```python
 import asyncio, scrapo
@@ -139,7 +142,7 @@ async def main():
 asyncio.run(main())
 ```
 
-### 2️⃣ Typed extraction (LLM once, selectors forever)
+### 2. Typed extraction (LLM once, selectors forever)
 
 ```python
 import asyncio, scrapo
@@ -158,9 +161,9 @@ async def main():
 asyncio.run(main())
 ```
 
-> 💡 First call uses the LLM and **caches the selectors it learns**. Every subsequent call against the same domain + schema uses cached selectors and **zero LLM tokens** — until layout drifts, at which point Scrapo falls back to the LLM, re-derives selectors, and self-heals.
+> First call uses the LLM and **caches the selectors it learns**. Every subsequent call against the same domain + schema uses cached selectors and **zero LLM tokens** — until layout drifts, at which point Scrapo falls back to the LLM, re-derives selectors, and self-heals.
 
-### 3️⃣ Recursive crawl
+### 3. Recursive crawl
 
 ```python
 await scrapo.crawl(
@@ -170,7 +173,7 @@ await scrapo.crawl(
 )
 ```
 
-### 4️⃣ Replay & diff
+### 4. Replay & diff
 
 ```bash
 scrapo list                    # recent runs
@@ -180,10 +183,10 @@ scrapo diff <run_a> <run_b>    # field-level diff
 
 ---
 
-## 🧰 Features
+## Features
 
 <details>
-<summary><b>🔁 Cost-aware tier router</b></summary>
+<summary><b>Cost-aware tier router</b></summary>
 
 | Tier | What it does | When |
 |---|---|---|
@@ -198,7 +201,7 @@ Escalation triggers: Cloudflare/Akamai/PerimeterX/DataDome/Distil fingerprints, 
 </details>
 
 <details>
-<summary><b>🧬 Hybrid selector + LLM extractor</b></summary>
+<summary><b>Hybrid selector + LLM extractor</b></summary>
 
 ```
 ┌── cache hit + validates ──→ return (method=selector, llm_calls=0)
@@ -211,7 +214,7 @@ The LLM is asked to return both the JSON payload *and* CSS selectors per field. 
 </details>
 
 <details>
-<summary><b>📌 Model pinning (Zyte-style, but built in)</b></summary>
+<summary><b>Model pinning (Zyte-style, but built in)</b></summary>
 
 ```python
 from scrapo.extract.pinning import PinnedModel
@@ -230,7 +233,7 @@ await scrapo.scrape(url, schema=Product, pin=pin, strict_pin=True)
 </details>
 
 <details>
-<summary><b>🪪 Per-chunk provenance</b></summary>
+<summary><b>Per-chunk provenance</b></summary>
 
 Every chunk Scrapo emits carries:
 ```python
@@ -249,7 +252,7 @@ You can trace any LLM citation back to a specific section of a specific URL.
 </details>
 
 <details>
-<summary><b>🎞️ Deterministic replay & diff</b></summary>
+<summary><b>Deterministic replay & diff</b></summary>
 
 Every fetch persists raw HTML, headers, screenshots, and the typed extraction:
 
@@ -271,7 +274,7 @@ diff 9f3e1c…  vs  abc123…
 </details>
 
 <details>
-<summary><b>🛂 Built-in compliance layer</b></summary>
+<summary><b>Built-in compliance layer</b></summary>
 
 - Optional `robots.txt` parser with per-origin caching
 - Regex PII classifier (email, phone, SSN, credit card with Luhn, IPv4, IBAN, passport)
@@ -281,7 +284,7 @@ diff 9f3e1c…  vs  abc123…
 </details>
 
 <details>
-<summary><b>🛜 BYO proxy adapters</b></summary>
+<summary><b>BYO proxy adapters</b></summary>
 
 ```python
 from scrapo.access.adapters.brightdata import BrightDataAdapter
@@ -305,14 +308,14 @@ class MyAdapter:
 </details>
 
 <details>
-<summary><b>🤖 BYO LLM adapters</b></summary>
+<summary><b>BYO LLM adapters</b></summary>
 
 | Provider | Adapter | Install | Default model |
 |---|---|---|---|
-| Anthropic Claude | `anthropic` ✅ default | `pip install "scrapo[anthropic]"` | `claude-opus-4-7` |
+| Anthropic Claude | `anthropic` (default) | `pip install "scrapo[anthropic]"` | `claude-opus-4-7` |
 | OpenAI | `openai` | `pip install "scrapo[openai]"` | `gpt-4o-mini` |
 | Google Gemini | `gemini` | `pip install "scrapo[gemini]"` | `gemini-2.5-flash` |
-| Mock (offline) | `mock` ✅ tests | always available | — |
+| Mock (offline) | `mock` (tests) | always available | — |
 
 Anthropic adapter uses **prompt caching** on the schema block, so repeated extractions against the same Pydantic schema are cheap.
 
@@ -320,7 +323,7 @@ Anthropic adapter uses **prompt caching** on the schema block, so repeated extra
 
 ---
 
-## 🖥️ CLI
+## CLI
 
 ```bash
 scrapo scrape https://example.com/
@@ -331,12 +334,13 @@ scrapo replay <run_id>
 scrapo diff <run_a> <run_b>
 scrapo audit                    # tail the append-only audit log
 scrapo adapters                 # list registered proxy adapters
+scrapo serve                    # local browser UI at http://127.0.0.1:8787
 scrapo mcp                      # run the MCP server over stdio
 ```
 
 ---
 
-## 🔌 Use as an MCP server
+## Use as an MCP server
 
 Scrapo ships an MCP server exposing five tools to any MCP-compatible client (Claude Code, Claude Desktop, Cursor, …):
 
@@ -364,7 +368,7 @@ Add to your client config:
 
 ---
 
-## ⚙️ Configuration
+## Configuration
 
 Every default is overridable via env var:
 
@@ -386,26 +390,24 @@ Every default is overridable via env var:
 
 ---
 
-## 🧪 Tests
+## Tests
 
 ```bash
 pip install -e ".[dev]"
 pytest -q
 ```
 
-The suite is **fully offline** — no test hits the network or a paid LLM. 11 test files cover signals, shape, extract, replay, policy, dedup, queue, router, adapters, and end-to-end scrape with monkeypatched fetchers.
+The suite is **fully offline** — no test hits the network or a paid LLM. It covers signals, shape, extract, replay, policy, dedup, queue, router, adapters, the local web UI, config, and end-to-end scrape with monkeypatched fetchers.
 
 ---
 
-## 🧭 Project status
+## Project status
 
 Alpha. The public API (`scrape`, `extract`, `crawl`) is stable; tier escalation, model pinning, replay schema, and the MCP tool surface are stable. Parts that are intentionally lightweight today and slated for hardening: T4 agent driver, full Stagehand-style action caching, S3 snapshot adapter, hosted control plane.
 
-See [PLAN.md](PLAN.md) for the full design and roadmap.
-
 ---
 
-## 📜 License
+## License
 
 [MIT](LICENSE) © Scrapo contributors
 
