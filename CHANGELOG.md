@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-05-11
+
+Feature release: conditional requests, change tracking (`watch()`), and a
+streaming crawl. Turns the replay + field-diff foundation into a "tell me what
+changed" workflow, and makes re-scrapes cheap.
+
+### Added
+
+- **Conditional GET** (`scrapo.access.http_tier`): re-scraping a URL the HTTP tier fetched before now sends `If-None-Match` / `If-Modified-Since` from the prior run's validators. On a `304 Not Modified`, `scrape()` rebuilds the page from the archived snapshot (and skips the LLM — the selector cache makes re-extraction free), pointing the new run at the same snapshot instead of writing a duplicate. `FetchResult` / `ScrapeResult` / `RunRecord` gained a `not_modified` flag; `FetchResult` gained `etag` / `last_modified` / `validators()`; the `runs` table gained `etag` / `last_modified` / `not_modified` columns (auto-migrated on existing DBs with `ALTER TABLE`). On by default — `Config(conditional_requests=False)` or `SCRAPO_CONDITIONAL_REQUESTS=0` to disable. New `Conditional` type and `ReplayStore.last_run(url)`.
+- **`watch()` / `Watch.refresh()` → `ChangeSet`** (`scrapo.watch`): `watch(url, schema=...)` does an initial scrape and hands back a `Watch`; `await w.refresh()` re-scrapes (conditional GET kicks in automatically) and returns a `ChangeSet` — `changed` / `not_modified` flags, the field-level `diff` (the existing `DiffReport`), and the fresh `ScrapeResult`. In-process only (the run history lives in the replay store); persisting a watch *list* with a scheduler is a deployable-service concern and stays out of scope. `watch`, `Watch`, `ChangeSet` are re-exported from `scrapo`.
+- **Streaming crawl** (`scrapo.crawl_stream`): `async for page in crawl_stream(seeds, ...)` yields each `ScrapeResult` as it completes instead of buffering the whole crawl; breaking out early stops the crawl and tears down the shared browser. `crawl()` stays as the buffered convenience.
+- **CLI / MCP**: `scrapo scrape <url> --diff-last` prints a field-level diff against the previous recorded run of that URL (and shows `not-modified` when a 304 was reused); the `scrapo_scrape` MCP tool gained a `diff_last` argument that returns the diff alongside the result.
+- New config / env var: `conditional_requests` / `SCRAPO_CONDITIONAL_REQUESTS`.
+
+### Not in this release
+
+- A hosted control plane — a scheduler that runs and persists a list of watches, sends alerts, and gives you a web console — is a deployable service rather than a library feature and stays out of scope.
+
 ## [0.6.0] - 2026-05-10
 
 Roadmap release: deeper proxy rotation with per-endpoint health tracking. This

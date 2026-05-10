@@ -70,6 +70,32 @@ async def test_router_escalates_past_block(isolated_config):
     assert Tier.BROWSER in stub.calls
 
 
+def test_should_escalate_skips_not_modified():
+    r = FetchResult(
+        url="u", final_url="u", status=304, html="", headers={},
+        tier_used=Tier.HTTP, not_modified=True,
+    )
+    assert TierRouter._should_escalate(r) is False
+
+
+@pytest.mark.asyncio
+async def test_router_passes_conditional_to_http_tier(isolated_config):
+    from scrapo.types import Conditional
+
+    router = TierRouter(isolated_config)
+    captured: dict[str, Any] = {}
+
+    class CapHttp:
+        async def fetch(self, url: str, **kwargs: Any) -> FetchResult:
+            captured.update(kwargs)
+            return _ok(Tier.HTTP)
+
+    router.http = CapHttp()
+    await router.fetch("https://e.com/x", conditional=Conditional(etag='"x"'))
+    assert isinstance(captured.get("conditional"), Conditional)
+    assert captured["conditional"].etag == '"x"'
+
+
 def test_router_builds_proxy_pool_from_config(tmp_path):
     from scrapo.access.proxy_pool import ProxyPool
     from scrapo.config import Config

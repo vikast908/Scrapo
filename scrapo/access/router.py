@@ -11,7 +11,7 @@ from scrapo.access.http_tier import HttpTier
 from scrapo.access.proxy_pool import ProxyPool
 from scrapo.access.signals import is_spa_shell, is_thin
 from scrapo.config import Config
-from scrapo.types import Budget, FetchResult, Tier
+from scrapo.types import Budget, Conditional, FetchResult, Tier
 
 _HTTP_TIERS = (Tier.HTTP, Tier.HTTP_SESSIONED)
 
@@ -61,6 +61,7 @@ class TierRouter:
         screenshot: bool = False,
         agent_goal: str | None = None,
         storage_state: str | None = None,
+        conditional: Conditional | None = None,
     ) -> FetchResult:
         budget = budget or Budget(max_tier=self.config.default_max_tier)
 
@@ -72,6 +73,7 @@ class TierRouter:
                 screenshot=screenshot,
                 agent_goal=agent_goal,
                 storage_state=storage_state,
+                conditional=conditional,
             )
 
         last: FetchResult | None = None
@@ -84,6 +86,7 @@ class TierRouter:
                 screenshot=screenshot,
                 agent_goal=agent_goal,
                 storage_state=storage_state,
+                conditional=conditional,
             )
             last = result
             if not self._should_escalate(result):
@@ -117,6 +120,8 @@ class TierRouter:
 
     @staticmethod
     def _should_escalate(result: FetchResult) -> bool:
+        if result.not_modified:
+            return False  # 304 — content is unchanged, nothing to escalate to
         if result.blocked or result.status >= 400:
             return True
         if result.raw_content is not None:
@@ -134,9 +139,10 @@ class TierRouter:
         screenshot: bool,
         agent_goal: str | None,
         storage_state: str | None,
+        conditional: Conditional | None = None,
     ) -> FetchResult:
         if tier in (Tier.HTTP, Tier.HTTP_SESSIONED):
-            return await self.http.fetch(url, tier=tier)
+            return await self.http.fetch(url, tier=tier, conditional=conditional)
         if tier in (Tier.BROWSER, Tier.BROWSER_STEALTH):
             return await self.browser.fetch(
                 url,

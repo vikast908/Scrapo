@@ -25,7 +25,14 @@ async def _scrapo_scrape(args: dict[str, Any]) -> dict[str, Any]:
         wait_for=args.get("wait_for"),
         screenshot=bool(args.get("screenshot", False)),
     )
-    return result.model_dump(mode="json")
+    payload = result.model_dump(mode="json")
+    if args.get("diff_last") and not result.blocked:
+        store = ReplayStore(get_config())
+        runs = await store.list_runs(url=args["url"], limit=2)
+        if len(runs) >= 2:
+            report = await diff_runs(store, runs[1]["run_id"], runs[0]["run_id"])
+            payload["diff"] = {"summary": diff_summary(report), **report.to_dict()}
+    return payload
 
 
 async def _scrapo_crawl(args: dict[str, Any]) -> dict[str, Any]:

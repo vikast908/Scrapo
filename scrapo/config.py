@@ -38,6 +38,7 @@ class Config:
     browser_capture_xhr: bool = True  # surface JSON XHR/fetch responses on FetchResult
     allow_private_hosts: bool = False
     http_retries: int = 2
+    conditional_requests: bool = True  # re-scrapes send If-None-Match/If-Modified-Since and reuse the archive on 304
     proxy_adapter: str | None = None
     proxy_urls: list[str] = field(default_factory=list)  # static proxy pool, rotated with health checks
     proxy_cooldown_seconds: float = 120.0  # how long a parked proxy stays out of rotation
@@ -91,6 +92,7 @@ class Config:
             browser_capture_xhr=os.environ.get("SCRAPO_BROWSER_CAPTURE_XHR", "1") == "1",
             allow_private_hosts=os.environ.get("SCRAPO_ALLOW_PRIVATE_HOSTS", "0") == "1",
             http_retries=int(os.environ.get("SCRAPO_HTTP_RETRIES", "2")),
+            conditional_requests=os.environ.get("SCRAPO_CONDITIONAL_REQUESTS", "1") == "1",
             proxy_adapter=os.environ.get("SCRAPO_PROXY_ADAPTER") or None,
             proxy_urls=[u.strip() for u in os.environ.get("SCRAPO_PROXY_URLS", "").split(",") if u.strip()],
             proxy_cooldown_seconds=float(os.environ.get("SCRAPO_PROXY_COOLDOWN", "120")),

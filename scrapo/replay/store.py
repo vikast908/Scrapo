@@ -8,6 +8,7 @@ string it returns is what the ``runs`` table records.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import time
 from dataclasses import asdict
@@ -38,11 +39,21 @@ CREATE TABLE IF NOT EXISTS runs (
     html_path TEXT,
     headers_json TEXT,
     extraction_json TEXT,
-    screenshot_path TEXT
+    screenshot_path TEXT,
+    etag TEXT,
+    last_modified TEXT,
+    not_modified INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_runs_url ON runs(url, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_runs_schema ON runs(schema_version);
 """
+
+# columns added after the initial release — applied with ALTER TABLE on existing DBs
+_MIGRATIONS: list[tuple[str, str]] = [
+    ("etag", "TEXT"),
+    ("last_modified", "TEXT"),
+    ("not_modified", "INTEGER DEFAULT 0"),
+]
 
 
 class ReplayStore:
@@ -59,6 +70,10 @@ class ReplayStore:
             return
         async with connect(self.db_path) as db:
             await db.executescript(_SCHEMA)
+            for column, decl in _MIGRATIONS:
+                # column already exists on a fresh DB (in _SCHEMA) or one migrated earlier
+                with contextlib.suppress(aiosqlite.OperationalError):
+                    await db.execute(f"ALTER TABLE runs ADD COLUMN {column} {decl}")
             await db.commit()
         self._initialized = True
 
@@ -67,11 +82,14 @@ class ReplayStore:
         record: RunRecord,
         fetch: FetchResult | None,
         extraction: ExtractionResult | None,
+        *,
+        html_path: str | None = None,
     ) -> None:
+        """Persist a run. Pass ``html_path`` to point at an already-stored snapshot
+        (e.g. the prior run's archive on a 304) instead of writing a duplicate."""
         await self._ensure()
         record.finished_at = record.finished_at or time.time()
 
-        html_path: str | None = None
         screenshot_path: str | None = None
         headers_json: str | None = None
 
@@ -79,7 +97,7 @@ class ReplayStore:
             blob = fetch.raw_content if fetch.raw_content is not None else (
                 fetch.html.encode("utf-8") if fetch.html else None
             )
-            if self.config.snapshot_html and blob:
+            if html_path is None and self.config.snapshot_html and blob:
                 html_path = self.snapshots.put(f"{record.run_id}.html.gz", gz(blob))
             if fetch.screenshot_png:
                 screenshot_path = self.snapshots.put(f"{record.run_id}.png", fetch.screenshot_png)
@@ -94,8 +112,9 @@ class ReplayStore:
                 "INSERT OR REPLACE INTO runs("
                 "run_id, url, started_at, finished_at, tier_used, proxy_region, "
                 "fetch_status, extraction_method, model_pinned, schema_version, "
-                "cost_usd, llm_calls, error, html_path, headers_json, extraction_json, screenshot_path"
-                ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "cost_usd, llm_calls, error, html_path, headers_json, extraction_json, screenshot_path, "
+                "etag, last_modified, not_modified"
+                ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     record.run_id,
                     record.url,
@@ -114,6 +133,9 @@ class ReplayStore:
                     headers_json,
                     extraction_json,
                     screenshot_path,
+                    record.etag,
+                    record.last_modified,
+                    1 if record.not_modified else 0,
                 ),
             )
             await db.commit()
@@ -150,6 +172,11 @@ class ReplayStore:
                 )
             rows = await cur.fetchall()
         return [dict(r) for r in rows]
+
+    async def last_run(self, url: str) -> dict[str, Any] | None:
+        """The most recent recorded run for ``url`` (any status), or None."""
+        rows = await self.list_runs(url=url, limit=1)
+        return rows[0] if rows else None
 
 
 def _serialize_extraction(extraction: ExtractionResult) -> dict[str, Any]:

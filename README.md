@@ -115,10 +115,11 @@ scrapo/
 ├── crawl/       # persistent SQLite queue + async scheduler + sitemap discovery + rel=next pagination
 ├── agent/       # (6) MCP server + tool schemas
 ├── results.py   # typed ScrapeResult / CrawlResult / ExtractionView
+├── watch.py     # watch(url) -> Watch.refresh() -> ChangeSet (change tracking)
 ├── security.py  # SSRF guard for fetch targets
 ├── _db.py       # tuned SQLite connections (WAL, busy timeout)
 ├── logging.py   # structlog setup for the CLI / MCP server
-├── api.py       # public scrape / extract / crawl
+├── api.py       # public scrape / extract / crawl / crawl_stream
 ├── web.py       # local browser UI (scrapo serve)
 └── cli.py       # Typer CLI
 ```
@@ -296,6 +297,45 @@ diff 9f3e1c...  vs  abc123...
     - in_stock: True -> False
 ```
 
+`scrapo scrape <url> --diff-last` prints that diff against the previous run of the same URL in one step.
+
+</details>
+
+<details>
+<summary><b>Watch a URL for changes (cheap re-scrapes)</b></summary>
+
+Re-scraping a URL the HTTP tier fetched before sends a conditional GET (`If-None-Match` / `If-Modified-Since`). A `304 Not Modified` is rebuilt from the archived snapshot — **no body transfer, no LLM call** (the selector cache makes re-extraction free), and no duplicate snapshot is written. `scrape()` / `crawl()` get this automatically; `Config(conditional_requests=False)` (or `SCRAPO_CONDITIONAL_REQUESTS=0`) turns it off.
+
+`watch()` builds the change-tracking loop on top of that:
+
+```python
+import scrapo
+
+w = await scrapo.watch("https://example.com/pricing", schema=Pricing)
+# ... later, or on a schedule of your choosing ...
+change = await w.refresh()
+if change.not_modified:
+    print("unchanged (304)")
+elif change.changed:
+    print(change.summary())          # field-level diff vs. the previous run
+    for d in change.field_changes:
+        print(d)                     # e.g. price: '$42' -> '$45'
+```
+
+`Watch` is in-process — the run history (and the diff) live in the replay store. Persisting a *list* of watches with a built-in scheduler is a hosted-service concern and is intentionally left out.
+
+</details>
+
+<details>
+<summary><b>Streaming crawl</b></summary>
+
+```python
+async for page in scrapo.crawl_stream(["https://blog.example.com/"], schema=Post):
+    save(page)                       # process pages as they complete, not all at the end
+```
+
+Breaking out of the loop early stops the crawl and tears the shared browser down. `crawl()` remains the buffered convenience (returns aggregate stats + an `on_page` callback).
+
 </details>
 
 <details>
@@ -435,6 +475,7 @@ Every default is overridable via env var:
 | `SCRAPO_TIMEOUT` | `30` | request timeout (s) |
 | `SCRAPO_CONCURRENCY` | `8` | crawl concurrency |
 | `SCRAPO_HTTP_RETRIES` | `2` | retries on 429/5xx/transport errors |
+| `SCRAPO_CONDITIONAL_REQUESTS` | `1` | `0` to disable conditional GET / 304-archive reuse on re-scrapes |
 | `SCRAPO_RESPECT_ROBOTS` | `0` | `1` to enable the robots gate |
 | `SCRAPO_PII_FILTER` | `0` | `1` to flag PII in the audit log |
 | `SCRAPO_REDACT_SNAPSHOTS` | `0` | `1` to redact PII from stored snapshots/markdown/chunks |
@@ -467,7 +508,7 @@ ruff check .
 mypy scrapo/
 ```
 
-The suite is **fully offline**; no test hits the network or a paid LLM. It covers signals (including SPA-shell detection), SSRF, the HTTP retry path, shape, extract (cache eviction, budget, cost), replay, policy, dedup, queue, router, proxy adapters and the rotating pool (rotation, cooldown, hard vs. soft failures, upstream fallback, the tier feedback loop), the agent driver and its action cache (record / replay / self-heal / eviction with fake page + scripted LLM), the local web UI, config, and end-to-end scrape with monkeypatched fetchers.
+The suite is **fully offline**; no test hits the network or a paid LLM. It covers signals (including SPA-shell detection), SSRF, the HTTP retry path, conditional GET / 304-archive reuse, `watch()` change tracking and `crawl_stream`, shape, extract (cache eviction, budget, cost), replay (and the schema migration), policy, dedup, queue, router, proxy adapters and the rotating pool (rotation, cooldown, hard vs. soft failures, upstream fallback, the tier feedback loop), the agent driver and its action cache (record / replay / self-heal / eviction with fake page + scripted LLM), the local web UI, config, and end-to-end scrape with monkeypatched fetchers.
 
 ---
 
@@ -479,7 +520,7 @@ Issues and PRs welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the dev setup
 
 ## Project status
 
-Alpha. The public API (`scrape`, `extract`, `crawl`) is stable, as are tier escalation, model pinning, replay schema, typed results, list extraction, content-type routing, the pluggable snapshot store, the rotating proxy pool, and the MCP tool surface. The reference Tier-4 agent driver — now with action caching (record the steps to a goal, replay them token-free, self-heal back to the LLM when a step breaks) — and the in-browser request interception are functional but lightly exercised (a real browser is needed to validate them end to end). The library roadmap is otherwise complete; the only thing intentionally left out is a hosted control plane, which would be a separate deployable service rather than part of the library.
+Alpha. The public API (`scrape`, `extract`, `crawl`, `crawl_stream`, `watch`) is stable, as are tier escalation, model pinning, replay schema, typed results, list extraction, content-type routing, the pluggable snapshot store, the rotating proxy pool, conditional requests, and the MCP tool surface. The reference Tier-4 agent driver — with action caching (record the steps to a goal, replay them token-free, self-heal back to the LLM when a step breaks) — and the in-browser request interception are functional but lightly exercised (a real browser is needed to validate them end to end). The library roadmap is otherwise complete; the only thing intentionally left out is a hosted control plane (a scheduler that runs and persists a list of watches, sends alerts, and gives you a web console) — that's a separate deployable service rather than part of the library.
 
 See [CHANGELOG.md](CHANGELOG.md) for release notes.
 

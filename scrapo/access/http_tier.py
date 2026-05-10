@@ -14,7 +14,7 @@ from scrapo.access.adapters.base import ProxyAdapter, ProxyConfig
 from scrapo.access.proxy_pool import report_outcome
 from scrapo.access.signals import annotate
 from scrapo.config import Config
-from scrapo.types import FetchResult, Tier
+from scrapo.types import Conditional, FetchResult, Tier
 
 log = structlog.get_logger(__name__)
 
@@ -49,6 +49,7 @@ class HttpTier:
         cookies: dict[str, str] | None = None,
         extra_headers: dict[str, str] | None = None,
         geo: str | None = None,
+        conditional: Conditional | None = None,
     ) -> FetchResult:
         if tier not in (Tier.HTTP, Tier.HTTP_SESSIONED):
             raise ValueError(f"HttpTier only handles HTTP/HTTP_SESSIONED, got {tier}")
@@ -58,6 +59,8 @@ class HttpTier:
             headers.update(_DEFAULT_HEADERS_T1)
         if extra_headers:
             headers.update(extra_headers)
+        if conditional is not None and not conditional.is_empty:
+            headers.update(conditional.headers())
 
         pcfg: ProxyConfig | None = None
         proxy_region: str | None = None
@@ -88,6 +91,20 @@ class HttpTier:
                     resp = await client.get(url)
                     elapsed_ms = (time.perf_counter() - start) * 1000.0
                     headers = dict(resp.headers)
+                    if resp.status_code == 304:
+                        # conditional GET hit: nothing changed, no body sent
+                        last = FetchResult(
+                            url=url,
+                            final_url=str(resp.url),
+                            status=304,
+                            html="",
+                            headers=headers,
+                            tier_used=tier,
+                            elapsed_ms=elapsed_ms,
+                            proxy_region=proxy_region,
+                            not_modified=True,
+                        )
+                        break
                     ctype = (headers.get("content-type") or "").split(";")[0].strip().lower()
                     is_binary = ctype == "application/pdf" or ctype.startswith(
                         ("image/", "audio/", "video/", "font/")

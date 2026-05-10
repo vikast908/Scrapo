@@ -34,6 +34,29 @@ class BlockedHttp:
         )
 
 
+_BIG_PAGE = "<!doctype html><html><head><title>Demo</title></head><body><main><h1>Hello</h1><p>" + ("x " * 200) + "</p></main></body></html>"
+
+
+class ConditionalHttp:
+    """Returns the page with an ETag; answers a conditional GET with 304."""
+
+    def __init__(self, etag='"v1"'):
+        self.etag = etag
+        self.conditionals_seen: list[object] = []
+
+    async def fetch(self, url, *, tier=Tier.HTTP, conditional=None, **kwargs):
+        self.conditionals_seen.append(conditional)
+        if conditional is not None and not conditional.is_empty:
+            return FetchResult(
+                url=url, final_url=url, status=304, html="", headers={"etag": self.etag},
+                tier_used=tier, not_modified=True,
+            )
+        return FetchResult(
+            url=url, final_url=url, status=200, html=_BIG_PAGE,
+            headers={"content-type": "text/html", "etag": self.etag}, tier_used=tier,
+        )
+
+
 def _stub_router(monkeypatch, http_tier):
     from scrapo import api
 
@@ -164,3 +187,39 @@ async def test_crawl_returns_typed_result(isolated_config, monkeypatch):
     assert result.crawl_id
     assert sum(result.stats.values()) >= 1
     assert result["stats"] == result.stats
+
+
+@pytest.mark.asyncio
+async def test_rescrape_uses_conditional_get_and_reuses_archive(isolated_config, monkeypatch):
+    http = ConditionalHttp()
+    _stub_router(monkeypatch, http)
+    budget = Budget(max_tier=Tier.HTTP)
+
+    first = await scrape("https://example.com/watched", config=isolated_config, budget=budget)
+    assert first.not_modified is False
+    assert first.status == 200
+
+    second = await scrape("https://example.com/watched", config=isolated_config, budget=budget)
+    assert second.not_modified is True
+    assert "Hello" in (second.markdown or "")  # body reconstructed from the archive
+    assert http.conditionals_seen[0] is None  # first request: unconditional
+    assert http.conditionals_seen[-1] is not None  # second request: conditional GET
+
+    from scrapo.replay.store import ReplayStore
+
+    runs = await ReplayStore(isolated_config).list_runs(url="https://example.com/watched", limit=2)
+    assert runs[0]["not_modified"] == 1
+    assert runs[0]["html_path"] == runs[1]["html_path"]  # no duplicate snapshot written
+    assert runs[0]["etag"] == '"v1"'
+
+
+@pytest.mark.asyncio
+async def test_conditional_get_disabled_by_config(isolated_config, monkeypatch):
+    http = ConditionalHttp()
+    _stub_router(monkeypatch, http)
+    isolated_config.conditional_requests = False
+    budget = Budget(max_tier=Tier.HTTP)
+    await scrape("https://example.com/nc", config=isolated_config, budget=budget)
+    second = await scrape("https://example.com/nc", config=isolated_config, budget=budget)
+    assert second.not_modified is False
+    assert all(c is None for c in http.conditionals_seen)

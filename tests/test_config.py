@@ -47,6 +47,14 @@ def test_from_env_overrides_security_and_retry(monkeypatch, tmp_path):
     assert cfg.http_retries == 5
 
 
+def test_conditional_requests_default_and_env(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCRAPO_DATA_DIR", str(tmp_path / "scrapo"))
+    monkeypatch.delenv("SCRAPO_CONDITIONAL_REQUESTS", raising=False)
+    assert Config().conditional_requests is True
+    monkeypatch.setenv("SCRAPO_CONDITIONAL_REQUESTS", "0")
+    assert Config.from_env().conditional_requests is False
+
+
 def test_proxy_pool_defaults_and_env(monkeypatch, tmp_path):
     monkeypatch.setenv("SCRAPO_DATA_DIR", str(tmp_path / "scrapo"))
     monkeypatch.delenv("SCRAPO_PROXY_URLS", raising=False)

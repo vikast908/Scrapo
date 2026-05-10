@@ -12,7 +12,8 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "name": "scrapo_scrape",
         "description": "Fetch a single URL through Scrapo's tier router and return clean "
-        "markdown + provenance-tagged chunks. Optionally extracts typed JSON.",
+        "markdown + provenance-tagged chunks. Optionally extracts typed JSON. Re-scraping a "
+        "URL uses a conditional GET, so an unchanged page comes back fast (not_modified=true).",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -26,6 +27,11 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "type": "integer",
                     "description": "Cap escalation. 0=HTTP 1=HTTP+session 2=browser 3=stealth 4=agent",
                     "default": 2,
+                },
+                "diff_last": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Also return a field-level diff against the previous recorded run of this URL",
                 },
             },
             "required": ["url"],

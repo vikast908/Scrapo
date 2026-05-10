@@ -25,9 +25,10 @@ If you have ever copied information off a web page by hand, or wished a program 
 - Get structured data (the specific fields you define) out of pages, reliably and repeatably, including lists (every product on a listing page, every row of a table) when you describe them as a list of records.
 - Scrape JavaScript-heavy pages that do not work with a plain download.
 - Get past light anti-bot defenses on your own; get past tougher ones by plugging in a commercial proxy service (Bright Data, Oxylabs, Scrapfly, and Zyte are supported out of the box) — or hand it your own list of proxies and let it rotate through them, automatically benching any one that starts getting blocked and bringing it back later.
-- Crawl a whole site: follow links automatically, with limits on depth and page count, skipping duplicates.
+- Crawl a whole site: follow links automatically, with limits on depth and page count, skipping duplicates — and get each page handed back to you as it finishes, rather than waiting for the whole crawl.
 - Re-run an old extraction against the saved copy of a page, with zero new network requests.
 - Compare two saved runs and see, field by field, what changed.
+- Watch a page: re-check it later and get told whether it changed and exactly which fields moved. If the page hasn't changed, the re-check is almost free — no re-download, no AI call — because it asks the server "has this changed since I last looked?" first.
 - Use it from Python, from the terminal, or wired into an AI agent via MCP.
 - Choose your AI provider (Anthropic, OpenAI, Google Gemini), or run with no AI at all once the selectors are cached.
 - Put a ceiling on cost: cap how many AI calls or how many dollars a job is allowed to spend.
@@ -40,8 +41,8 @@ If you have ever copied information off a web page by hand, or wished a program 
 - **It is not a no-code, point-and-click product.** You need to write a little Python or use the command line. The built-in web page is intentionally minimal; it is for trying things, not a polished app.
 - **It cannot magically beat every site's defenses.** Aggressive bot protection and CAPTCHAs are genuinely hard. A proxy provider helps a lot, but nothing is guaranteed. The most advanced mode (an AI that drives a browser through logins and CAPTCHAs) exists but is lightweight and experimental today, and ships without a default driver.
 - **Logging into sites is experimental.** There is a built-in "agent" mode where an AI clicks through a page toward a goal (logins, simple forms), but it is new and unproven; for anything important, supply credentials or a saved login session yourself. (Once the agent has done a task on a site, it remembers the steps and replays them next time without calling the AI — and quietly falls back to the AI if the page has changed.)
-- **There is no hosted dashboard or scheduler.** Scrapo does not run your jobs in the cloud, send alerts, or give you a web console to manage everything. You run and schedule it yourself.
-- **It is alpha software.** The core works and is stable, but expect rough edges. The one piece intentionally left out is a hosted service to run and monitor your jobs for you — that would be a separate product, not part of the library.
+- **There is no hosted dashboard or scheduler.** You can ask Scrapo "watch this page" and re-check it whenever you want, but *you* decide when to re-check (a cron job, a script, by hand). Scrapo does not run your jobs in the cloud, keep a list of watches for you, send alerts, or give you a web console — that would be a separate product, not part of the library.
+- **It is alpha software.** The core works and is stable, but expect rough edges. The one piece intentionally left out is that hosted "run and monitor everything for you" service.
 - **AI extraction costs money.** The first run on a new site (or after a layout change) calls a paid AI model. Scrapo is designed to minimize this (most runs use the free cached recipe) but it is not literally free.
 - **It is not legal advice or a compliance guarantee.** The robots rules, personal-data flagging, geo limits, and audit log are *tools* to help you scrape responsibly. You are still responsible for following each site's terms and the law. (Note: robots-rule enforcement is off by default; you have to turn it on.)
 - **It is Python-only.** No JavaScript, Java, Go, etc. versions. Requires Python 3.11 or newer.

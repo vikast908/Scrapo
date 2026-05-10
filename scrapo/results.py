@@ -52,6 +52,7 @@ class ScrapeResult(_Mappingish):
     proxy_region: str | None = None
     blocked: bool = False
     block_reason: str | None = None
+    not_modified: bool = False  # served from a 304 conditional GET — content is unchanged
     elapsed_ms: float | None = None
     kind: str = "html"  # "html" | "json" | "feed" | "pdf" | "text"
     title: str | None = None

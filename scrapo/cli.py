@@ -42,28 +42,38 @@ def scrape(
     max_tier: Annotated[int, typer.Option(help="0=HTTP 1=HTTP+session 2=browser 3=stealth 4=agent")] = 2,
     wait_for: Annotated[str | None, typer.Option(help="CSS selector to wait for (browser tier)")] = None,
     screenshot: Annotated[bool, typer.Option(help="Capture screenshot (browser tier)")] = False,
+    diff_last: Annotated[bool, typer.Option(help="Diff against the previous recorded run of this URL")] = False,
     data_dir: Annotated[Path | None, typer.Option(help="Override data dir")] = None,
     out_md: Annotated[Path | None, typer.Option(help="Write markdown to this file")] = None,
     out_json: Annotated[Path | None, typer.Option(help="Write full JSON to this file")] = None,
 ) -> None:
     """Fetch one URL and print clean markdown."""
-    _load_config(data_dir)
+    cfg = _load_config(data_dir)
     budget = Budget(max_tier=Tier(max_tier))
     result = asyncio.run(scrape_api(url, budget=budget, wait_for=wait_for, screenshot=screenshot))
     if result.get("blocked"):
         console.print(f"[red]blocked:[/red] {result.get('block_reason')}")
         raise typer.Exit(code=2)
+    flags = " [yellow]not-modified[/yellow]" if result.get("not_modified") else ""
     console.print(
-        f"[green]OK[/green] {result['url']}  "
+        f"[green]OK[/green] {result['url']}{flags}  "
         f"[dim]tier={result['tier_used']} status={result['status']} "
         f"chunks={len(result['chunks'])} run={result['run_id'][:12]}...[/dim]"
     )
+    if diff_last:
+        store = ReplayStore(cfg)
+        runs = asyncio.run(store.list_runs(url=url, limit=2))
+        if len(runs) >= 2:
+            report = asyncio.run(diff_runs(store, runs[1]["run_id"], runs[0]["run_id"]))
+            console.print(diff_summary(report))
+        else:
+            console.print("[dim]no prior run to diff against[/dim]")
     if out_md:
-        out_md.write_text(result["markdown"], encoding="utf-8")
+        out_md.write_text(result["markdown"] or "", encoding="utf-8")
     if out_json:
         out_json.write_text(json.dumps(result, default=str, indent=2), encoding="utf-8")
     if not out_md and not out_json:
-        console.print(result["markdown"][:4000])
+        console.print((result["markdown"] or "")[:4000])
 
 
 @app.command()

@@ -49,6 +49,26 @@ class Budget:
 
 
 @dataclass(slots=True)
+class Conditional:
+    """HTTP validators for a conditional GET (``If-None-Match`` / ``If-Modified-Since``)."""
+
+    etag: str | None = None
+    last_modified: str | None = None
+
+    @property
+    def is_empty(self) -> bool:
+        return not (self.etag or self.last_modified)
+
+    def headers(self) -> dict[str, str]:
+        h: dict[str, str] = {}
+        if self.etag:
+            h["If-None-Match"] = self.etag
+        if self.last_modified:
+            h["If-Modified-Since"] = self.last_modified
+        return h
+
+
+@dataclass(slots=True)
 class FetchResult:
     """Result of a single page fetch — independent of extraction."""
 
@@ -66,6 +86,7 @@ class FetchResult:
     captured_json: list[dict[str, Any]] = field(default_factory=list)
     blocked: bool = False
     block_reason: str | None = None
+    not_modified: bool = False  # server answered a conditional GET with 304 (content unchanged)
 
     @property
     def html_hash(self) -> str:
@@ -74,6 +95,18 @@ class FetchResult:
     @property
     def content_type(self) -> str:
         return (self.headers.get("content-type") or self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+
+    @property
+    def etag(self) -> str | None:
+        return self.headers.get("etag") or self.headers.get("ETag") or None
+
+    @property
+    def last_modified(self) -> str | None:
+        return self.headers.get("last-modified") or self.headers.get("Last-Modified") or None
+
+    def validators(self) -> Conditional:
+        """The ETag / Last-Modified from the response, packaged for a later conditional GET."""
+        return Conditional(etag=self.etag, last_modified=self.last_modified)
 
 
 @dataclass(slots=True)
@@ -164,6 +197,9 @@ class RunRecord:
     cost_usd: float = 0.0
     llm_calls: int = 0
     error: str | None = None
+    etag: str | None = None  # response validators, for a later conditional GET
+    last_modified: str | None = None
+    not_modified: bool = False  # this run was served from a 304 (content unchanged)
 
     @staticmethod
     def new(url: str) -> RunRecord:
