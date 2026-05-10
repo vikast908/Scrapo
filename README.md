@@ -107,7 +107,7 @@ Plus a feature nobody else ships: **deterministic replay** of every fetch, so ex
 
 ```
 scrapo/
-├── access/      # (1) 5-tier router + pooled browser + request interception + agent driver + action cache + proxy adapters
+├── access/      # (1) 5-tier router + pooled browser + request interception + agent driver + action cache + proxy adapters & rotating pool
 ├── extract/     # (2) hybrid selector + LLM (scalar & list fields), model pinning, cost-aware budget
 ├── shape/       # (3) markdown + heading chunker + content-type dispatch (HTML / JSON / feed / PDF / text)
 ├── replay/      # (4) SQLite metadata + pluggable snapshot store (local or S3) + field-level diff
@@ -303,6 +303,7 @@ diff 9f3e1c...  vs  abc123...
 
 - **SSRF guard.** Every fetch target is checked before a request goes out; loopback, link-local (including `169.254.169.254`), private RFC 1918 / ULA ranges, and well-known local hostnames are refused. Set `allow_private_hosts=True` (or `SCRAPO_ALLOW_PRIVATE_HOSTS=1`) for internal scraping. Crawl link discovery applies the same filter and skips obvious binary URLs.
 - **Bounded HTTP retries.** Transient `429 / 5xx` and transport errors are retried with exponential backoff and jitter before the router escalates to a heavier tier (`SCRAPO_HTTP_RETRIES`, default `2`).
+- **Rotating proxy pool with health checks.** Hand Scrapo a list of proxy URLs (`Config(proxy_urls=[...])` or `SCRAPO_PROXY_URLS="http://a,http://b"`) and the router round-robins across them. Every fetch's outcome is fed back: an HTTP 4xx auth/rate-limit code or an anti-bot fingerprint parks that proxy for `proxy_cooldown_seconds` (it's an IP-level block); a transient 5xx / network error counts toward `max_failures`; a clean fetch resets the streak. `ProxyPool` implements the `ProxyAdapter` protocol, so it composes with the vendor adapters — pass `upstream=<adapter>` to fall back to a managed gateway when every static endpoint is parked. Credentials are stripped from proxy URLs before they're logged.
 - **Concurrency-safe storage.** All SQLite stores (replay, selector cache, crawl queue) open in WAL mode with a busy timeout, so concurrent crawl workers do not trip over each other.
 - **Pluggable snapshot storage.** Replay metadata stays in SQLite, but the page bodies go through a `SnapshotStore`: local files by default, or S3 with `snapshot_backend="s3://bucket/prefix"` (`pip install "scrapo[s3]"`).
 - **Browser reuse and lighter pages.** A `TierRouter` launches one headless Chromium lazily and reuses it across fetches (proxy applied per context); the browser tiers also block images/fonts/media/css and surface JSON XHR responses. `TierRouter.aclose()` tears it down; `scrape()` and `crawl()` handle that for you.
@@ -345,6 +346,18 @@ class MyAdapter:
     async def get_proxy(self, geo=None):
         return ProxyConfig(url="http://user:pass@my-proxy:8080", region=geo)
 ```
+
+Got your own list of proxies instead of a managed gateway? Use the built-in rotating pool — it round-robins, tracks per-endpoint health, and parks one that starts getting blocked:
+
+```python
+from scrapo.access import ProxyPool
+
+pool = ProxyPool(["http://u:p@a:8080", "http://u:p@b:8080"])     # or ProxyPool.from_env() / Config(proxy_urls=[...])
+await scrapo.scrape("https://hard-target.com/", proxy_adapter=pool)
+pool.stats()  # per-endpoint successes / failures / cooldown
+```
+
+Pass `upstream=BrightDataAdapter()` to `ProxyPool` to fall back to a managed gateway when every endpoint in the pool is cooling down.
 
 </details>
 
@@ -432,6 +445,8 @@ Every default is overridable via env var:
 | `SCRAPO_AGENT_DRIVER` | unset | `llm` to enable the built-in Tier-4 agent driver |
 | `SCRAPO_AGENT_ACTION_CACHE` | `1` | `0` to disable recording/replaying Tier-4 agent action sequences |
 | `SCRAPO_PROXY_ADAPTER` | unset | default registered adapter name |
+| `SCRAPO_PROXY_URLS` | unset | comma-separated proxy URLs for the rotating pool (used when no adapter is set) |
+| `SCRAPO_PROXY_COOLDOWN` | `120` | seconds a parked proxy stays out of rotation |
 | `SCRAPO_LLM_ADAPTER` | `anthropic` | default LLM provider |
 | `SCRAPO_LLM_MODEL` | `claude-opus-4-7` | default model id |
 | `SCRAPO_GEO` | unset | default proxy region |
@@ -452,7 +467,7 @@ ruff check .
 mypy scrapo/
 ```
 
-The suite is **fully offline**; no test hits the network or a paid LLM. It covers signals (including SPA-shell detection), SSRF, the HTTP retry path, shape, extract (cache eviction, budget, cost), replay, policy, dedup, queue, router, adapters, the agent driver and its action cache (record / replay / self-heal / eviction with fake page + scripted LLM), the local web UI, config, and end-to-end scrape with monkeypatched fetchers.
+The suite is **fully offline**; no test hits the network or a paid LLM. It covers signals (including SPA-shell detection), SSRF, the HTTP retry path, shape, extract (cache eviction, budget, cost), replay, policy, dedup, queue, router, proxy adapters and the rotating pool (rotation, cooldown, hard vs. soft failures, upstream fallback, the tier feedback loop), the agent driver and its action cache (record / replay / self-heal / eviction with fake page + scripted LLM), the local web UI, config, and end-to-end scrape with monkeypatched fetchers.
 
 ---
 
@@ -464,7 +479,7 @@ Issues and PRs welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the dev setup
 
 ## Project status
 
-Alpha. The public API (`scrape`, `extract`, `crawl`) is stable, as are tier escalation, model pinning, replay schema, typed results, list extraction, content-type routing, the pluggable snapshot store, and the MCP tool surface. The reference Tier-4 agent driver — now with action caching (record the steps to a goal, replay them token-free, self-heal back to the LLM when a step breaks) — and the in-browser request interception are functional but lightly exercised (a real browser is needed to validate them end to end). Still open: deeper proxy rotation / health, and a hosted control plane (which would be a separate deployable service rather than part of the library).
+Alpha. The public API (`scrape`, `extract`, `crawl`) is stable, as are tier escalation, model pinning, replay schema, typed results, list extraction, content-type routing, the pluggable snapshot store, the rotating proxy pool, and the MCP tool surface. The reference Tier-4 agent driver — now with action caching (record the steps to a goal, replay them token-free, self-heal back to the LLM when a step breaks) — and the in-browser request interception are functional but lightly exercised (a real browser is needed to validate them end to end). The library roadmap is otherwise complete; the only thing intentionally left out is a hosted control plane, which would be a separate deployable service rather than part of the library.
 
 See [CHANGELOG.md](CHANGELOG.md) for release notes.
 

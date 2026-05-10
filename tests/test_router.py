@@ -70,6 +70,23 @@ async def test_router_escalates_past_block(isolated_config):
     assert Tier.BROWSER in stub.calls
 
 
+def test_router_builds_proxy_pool_from_config(tmp_path):
+    from scrapo.access.proxy_pool import ProxyPool
+    from scrapo.config import Config
+
+    r = TierRouter(Config(data_dir=tmp_path / "a", proxy_urls=["http://a:1", "http://b:2"]))
+    assert isinstance(r.proxy_adapter, ProxyPool)
+    assert r.http.proxy_adapter is r.proxy_adapter
+    assert r.browser.proxy_adapter is r.proxy_adapter
+    # nothing configured -> no proxy adapter at all
+    assert TierRouter(Config(data_dir=tmp_path / "b")).proxy_adapter is None
+    # an explicitly passed adapter wins; the static pool is not auto-built
+    sentinel = object()
+    assert TierRouter(
+        Config(data_dir=tmp_path / "c", proxy_urls=["http://a:1"]), proxy_adapter=sentinel
+    ).proxy_adapter is sentinel
+
+
 @pytest.mark.asyncio
 async def test_router_respects_max_tier_budget(isolated_config):
     router = TierRouter(isolated_config)

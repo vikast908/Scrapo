@@ -10,7 +10,8 @@ from typing import Any
 import httpx
 import structlog
 
-from scrapo.access.adapters.base import ProxyAdapter
+from scrapo.access.adapters.base import ProxyAdapter, ProxyConfig
+from scrapo.access.proxy_pool import report_outcome
 from scrapo.access.signals import annotate
 from scrapo.config import Config
 from scrapo.types import FetchResult, Tier
@@ -58,15 +59,14 @@ class HttpTier:
         if extra_headers:
             headers.update(extra_headers)
 
-        proxy_url: str | None = None
+        pcfg: ProxyConfig | None = None
         proxy_region: str | None = None
         if self.proxy_adapter:
-            cfg = await self.proxy_adapter.get_proxy(geo or self.config.geo)
-            if cfg:
-                proxy_url = cfg.url
-                proxy_region = cfg.region
-                if cfg.extra_headers:
-                    headers.update(cfg.extra_headers)
+            pcfg = await self.proxy_adapter.get_proxy(geo or self.config.geo)
+            if pcfg:
+                proxy_region = pcfg.region
+                if pcfg.extra_headers:
+                    headers.update(pcfg.extra_headers)
 
         client_kwargs: dict[str, Any] = {
             "timeout": self.config.request_timeout,
@@ -74,8 +74,8 @@ class HttpTier:
             "headers": headers,
             "http2": True,
         }
-        if proxy_url:
-            client_kwargs["proxy"] = proxy_url
+        if pcfg:
+            client_kwargs["proxy"] = pcfg.url
         if cookies:
             client_kwargs["cookies"] = cookies
 
@@ -106,7 +106,7 @@ class HttpTier:
                         )
                     )
                     if resp.status_code not in _RETRYABLE_STATUS:
-                        return last
+                        break
                 except httpx.HTTPError as e:
                     elapsed_ms = (time.perf_counter() - start) * 1000.0
                     last = FetchResult(
@@ -133,4 +133,5 @@ class HttpTier:
                     await asyncio.sleep(backoff)
 
         assert last is not None
+        await report_outcome(self.proxy_adapter, pcfg, last)
         return last

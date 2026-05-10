@@ -16,6 +16,7 @@ class ProxyConfig:
     region: str | None = None
     sticky_session: str | None = None
     extra_headers: dict[str, str] | None = None
+    key: str | None = None  # stable id for health tracking (set by ProxyPool); None = untracked
 
 
 class ProxyAdapter(Protocol):

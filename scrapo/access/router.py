@@ -8,6 +8,7 @@ from scrapo.access.adapters.base import ProxyAdapter, registry
 from scrapo.access.agent_tier import AgentDriver, AgentTier
 from scrapo.access.browser_tier import BrowserTier
 from scrapo.access.http_tier import HttpTier
+from scrapo.access.proxy_pool import ProxyPool
 from scrapo.access.signals import is_spa_shell, is_thin
 from scrapo.config import Config
 from scrapo.types import Budget, FetchResult, Tier
@@ -29,6 +30,10 @@ class TierRouter:
         self.config = config
         if proxy_adapter is None and config.proxy_adapter:
             proxy_adapter = registry.get(config.proxy_adapter)
+        if proxy_adapter is None and config.proxy_urls:
+            proxy_adapter = ProxyPool(
+                config.proxy_urls, cooldown_seconds=config.proxy_cooldown_seconds
+            )
         self.proxy_adapter = proxy_adapter
         if agent_driver is None and config.agent_driver == "llm":
             from scrapo.access.agent_drivers import LLMAgentDriver

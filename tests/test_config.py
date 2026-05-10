@@ -45,3 +45,18 @@ def test_from_env_overrides_security_and_retry(monkeypatch, tmp_path):
     assert cfg.allow_private_hosts is True
     assert cfg.redact_snapshots is True
     assert cfg.http_retries == 5
+
+
+def test_proxy_pool_defaults_and_env(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCRAPO_DATA_DIR", str(tmp_path / "scrapo"))
+    monkeypatch.delenv("SCRAPO_PROXY_URLS", raising=False)
+    monkeypatch.delenv("SCRAPO_PROXY_COOLDOWN", raising=False)
+
+    assert Config().proxy_urls == []
+    assert Config().proxy_cooldown_seconds == 120.0
+
+    monkeypatch.setenv("SCRAPO_PROXY_URLS", "http://a:1, http://b:2 ,")
+    monkeypatch.setenv("SCRAPO_PROXY_COOLDOWN", "45")
+    cfg = Config.from_env()
+    assert cfg.proxy_urls == ["http://a:1", "http://b:2"]
+    assert cfg.proxy_cooldown_seconds == 45.0

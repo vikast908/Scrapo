@@ -13,8 +13,9 @@ from typing import Any
 
 import structlog
 
-from scrapo.access.adapters.base import ProxyAdapter
+from scrapo.access.adapters.base import ProxyAdapter, ProxyConfig
 from scrapo.access.browser_pool import BrowserPool
+from scrapo.access.proxy_pool import report_outcome
 from scrapo.access.signals import annotate
 from scrapo.config import Config
 from scrapo.types import FetchResult, Tier
@@ -62,13 +63,11 @@ class BrowserTier:
                 blocked=True, block_reason=f"playwright-missing:{e}",
             )
 
-        proxy_settings: dict[str, str] | None = None
-        proxy_region: str | None = None
-        if self.proxy_adapter:
-            pcfg = await self.proxy_adapter.get_proxy(geo or self.config.geo)
-            if pcfg:
-                proxy_region = pcfg.region
-                proxy_settings = self._parse_proxy(pcfg.url)
+        pcfg: ProxyConfig | None = (
+            await self.proxy_adapter.get_proxy(geo or self.config.geo) if self.proxy_adapter else None
+        )
+        proxy_region = pcfg.region if pcfg else None
+        proxy_settings = self._parse_proxy(pcfg.url) if pcfg else None
 
         ctx_kwargs: dict[str, Any] = {
             "user_agent": self.config.user_agent,
@@ -105,7 +104,7 @@ class BrowserTier:
             shot = await page.screenshot(full_page=False) if screenshot else None
             elapsed_ms = (time.perf_counter() - start) * 1000.0
 
-        return annotate(
+        result = annotate(
             FetchResult(
                 url=url,
                 final_url=final_url,
@@ -119,6 +118,8 @@ class BrowserTier:
                 captured_json=captured[:50],
             )
         )
+        await report_outcome(self.proxy_adapter, pcfg, result)
+        return result
 
     @staticmethod
     def _parse_proxy(proxy_url: str) -> dict[str, str]:

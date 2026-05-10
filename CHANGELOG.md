@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-05-10
+
+Roadmap release: deeper proxy rotation with per-endpoint health tracking. This
+closes out the library roadmap — the only remaining item, a hosted control
+plane, is a separate deployable service rather than a library feature.
+
+### Added
+
+- **Rotating proxy pool with health checks** (`scrapo.access.proxy_pool.ProxyPool`): give Scrapo a list of proxy URLs (`Config(proxy_urls=[...])` or `SCRAPO_PROXY_URLS="http://a,http://b"`) and the `TierRouter` round-robins across them, skipping any that are in cooldown. `ProxyPool` implements the `ProxyAdapter` protocol, so it slots in exactly where a vendor adapter would; pass `upstream=<adapter>` to fall back to a managed gateway when every static endpoint is parked (otherwise it falls back to a direct connection rather than a known-bad proxy). `ProxyConfig` gained a `key` field so an endpoint can be tracked; `ProxyPool.stats()` returns per-endpoint success/failure/cooldown counters for introspection.
+- **Proxy health feedback loop**: the HTTP and browser tiers now report every fetch's outcome back to a pool-like adapter (`report_outcome`). An HTTP 4xx auth/rate-limit code or an anti-bot fingerprint (Cloudflare, DataDome, …) is an IP-level block and parks that proxy immediately for `proxy_cooldown_seconds`; a transient 5xx, network error, or empty body counts toward `max_failures` (default 3) before parking; a clean fetch resets the streak. Credentials are stripped from proxy URLs before they hit the logs.
+- New config / env vars: `proxy_urls` / `SCRAPO_PROXY_URLS`, `proxy_cooldown_seconds` / `SCRAPO_PROXY_COOLDOWN`. `ProxyPool` is re-exported from `scrapo.access`.
+
+### Changed
+
+- A passed-in `proxy_adapter` (or a registered `SCRAPO_PROXY_ADAPTER`) still takes precedence; the static `ProxyPool` is only auto-built when no adapter is otherwise configured. To combine them, construct `ProxyPool(urls, upstream=<adapter>)` yourself and pass it to `TierRouter` / `scrape()`.
+
 ## [0.5.0] - 2026-05-10
 
 Roadmap release: Stagehand-style action caching for the Tier-4 agent driver — the

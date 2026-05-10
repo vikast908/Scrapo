@@ -39,6 +39,8 @@ class Config:
     allow_private_hosts: bool = False
     http_retries: int = 2
     proxy_adapter: str | None = None
+    proxy_urls: list[str] = field(default_factory=list)  # static proxy pool, rotated with health checks
+    proxy_cooldown_seconds: float = 120.0  # how long a parked proxy stays out of rotation
     agent_driver: str | None = None  # "llm" to use the built-in LLMAgentDriver at tier 4
     agent_action_cache: bool = True  # record/replay agent action sequences at tier 4
     llm_adapter: str | None = "anthropic"
@@ -90,6 +92,8 @@ class Config:
             allow_private_hosts=os.environ.get("SCRAPO_ALLOW_PRIVATE_HOSTS", "0") == "1",
             http_retries=int(os.environ.get("SCRAPO_HTTP_RETRIES", "2")),
             proxy_adapter=os.environ.get("SCRAPO_PROXY_ADAPTER") or None,
+            proxy_urls=[u.strip() for u in os.environ.get("SCRAPO_PROXY_URLS", "").split(",") if u.strip()],
+            proxy_cooldown_seconds=float(os.environ.get("SCRAPO_PROXY_COOLDOWN", "120")),
             agent_driver=os.environ.get("SCRAPO_AGENT_DRIVER") or None,
             agent_action_cache=os.environ.get("SCRAPO_AGENT_ACTION_CACHE", "1") == "1",
             llm_adapter=os.environ.get("SCRAPO_LLM_ADAPTER", "anthropic"),
