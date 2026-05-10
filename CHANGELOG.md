@@ -15,20 +15,20 @@ changed" workflow, and makes re-scrapes cheap.
 
 ### Added
 
-- **Conditional GET** (`scrapo.access.http_tier`): re-scraping a URL the HTTP tier fetched before now sends `If-None-Match` / `If-Modified-Since` from the prior run's validators. On a `304 Not Modified`, `scrape()` rebuilds the page from the archived snapshot (and skips the LLM — the selector cache makes re-extraction free), pointing the new run at the same snapshot instead of writing a duplicate. `FetchResult` / `ScrapeResult` / `RunRecord` gained a `not_modified` flag; `FetchResult` gained `etag` / `last_modified` / `validators()`; the `runs` table gained `etag` / `last_modified` / `not_modified` columns (auto-migrated on existing DBs with `ALTER TABLE`). On by default — `Config(conditional_requests=False)` or `SCRAPO_CONDITIONAL_REQUESTS=0` to disable. New `Conditional` type and `ReplayStore.last_run(url)`.
-- **`watch()` / `Watch.refresh()` → `ChangeSet`** (`scrapo.watch`): `watch(url, schema=...)` does an initial scrape and hands back a `Watch`; `await w.refresh()` re-scrapes (conditional GET kicks in automatically) and returns a `ChangeSet` — `changed` / `not_modified` flags, the field-level `diff` (the existing `DiffReport`), and the fresh `ScrapeResult`. In-process only (the run history lives in the replay store); persisting a watch *list* with a scheduler is a deployable-service concern and stays out of scope. `watch`, `Watch`, `ChangeSet` are re-exported from `scrapo`.
+- **Conditional GET** (`scrapo.access.http_tier`): re-scraping a URL the HTTP tier fetched before now sends `If-None-Match` / `If-Modified-Since` from the prior run's validators. On a `304 Not Modified`, `scrape()` rebuilds the page from the archived snapshot (and skips the LLM: the selector cache makes re-extraction free), pointing the new run at the same snapshot instead of writing a duplicate. `FetchResult` / `ScrapeResult` / `RunRecord` gained a `not_modified` flag; `FetchResult` gained `etag` / `last_modified` / `validators()`; the `runs` table gained `etag` / `last_modified` / `not_modified` columns (auto-migrated on existing DBs with `ALTER TABLE`). On by default; `Config(conditional_requests=False)` or `SCRAPO_CONDITIONAL_REQUESTS=0` disables it. New `Conditional` type and `ReplayStore.last_run(url)`.
+- **`watch()` / `Watch.refresh()` (`scrapo.watch`)**: `watch(url, schema=...)` does an initial scrape and hands back a `Watch`; `await w.refresh()` re-scrapes (conditional GET kicks in automatically) and returns a `ChangeSet`: `changed` / `not_modified` flags, the field-level `diff` (the existing `DiffReport`), and the fresh `ScrapeResult`. In-process only (the run history lives in the replay store); persisting a watch *list* with a scheduler is a deployable-service concern and stays out of scope. `watch`, `Watch`, `ChangeSet` are re-exported from `scrapo`.
 - **Streaming crawl** (`scrapo.crawl_stream`): `async for page in crawl_stream(seeds, ...)` yields each `ScrapeResult` as it completes instead of buffering the whole crawl; breaking out early stops the crawl and tears down the shared browser. `crawl()` stays as the buffered convenience.
 - **CLI / MCP**: `scrapo scrape <url> --diff-last` prints a field-level diff against the previous recorded run of that URL (and shows `not-modified` when a 304 was reused); the `scrapo_scrape` MCP tool gained a `diff_last` argument that returns the diff alongside the result.
 - New config / env var: `conditional_requests` / `SCRAPO_CONDITIONAL_REQUESTS`.
 
 ### Not in this release
 
-- A hosted control plane — a scheduler that runs and persists a list of watches, sends alerts, and gives you a web console — is a deployable service rather than a library feature and stays out of scope.
+- A hosted control plane (a scheduler that runs and persists a list of watches, sends alerts, and gives you a web console) is a deployable service rather than a library feature and stays out of scope.
 
 ## [0.6.0] - 2026-05-10
 
 Roadmap release: deeper proxy rotation with per-endpoint health tracking. This
-closes out the library roadmap — the only remaining item, a hosted control
+closes out the library roadmap; the only remaining item, a hosted control
 plane, is a separate deployable service rather than a library feature.
 
 ### Added
@@ -43,13 +43,13 @@ plane, is a separate deployable service rather than a library feature.
 
 ## [0.5.0] - 2026-05-10
 
-Roadmap release: Stagehand-style action caching for the Tier-4 agent driver — the
+Roadmap release: Stagehand-style action caching for the Tier-4 agent driver, the
 last open item from the 0.4.0 list. (A hosted control plane stays out of scope; it
 is a deployable service, not a library feature.)
 
 ### Added
 
-- **Agent action caching** (`scrapo.access.action_cache.ActionCache`): the Tier-4 agent driver now records the ordered actions it took to reach a goal on a host. Later runs with the same goal replay that script directly — zero LLM tokens — and only fall back to the model if a replayed step no longer applies (its element is gone, a navigation fails, …). Recordings are keyed by `(host, goal_hash)` in `agent_actions.sqlite`, with a per-key `failure_count` so a stale script is evicted after `cache_max_failures` (default 2) failed replays instead of being retried forever. Each recorded click/type carries a best-effort durable CSS selector plus the element's text/tag, so replay survives changing snapshot indices; `AgentTier` wires the cache in from config. On by default — disable with `Config(agent_action_cache=False)` or `SCRAPO_AGENT_ACTION_CACHE=0`. The snapshot JS the driver injects now also returns a `sel` (CSS path) for each element, and `LLMAgentDriver.run`'s result dict gains a `replayed` flag.
+- **Agent action caching** (`scrapo.access.action_cache.ActionCache`): the Tier-4 agent driver now records the ordered actions it took to reach a goal on a host. Later runs with the same goal replay that script directly (zero LLM tokens) and only fall back to the model if a replayed step no longer applies (its element is gone, a navigation fails, etc.). Recordings are keyed by `(host, goal_hash)` in `agent_actions.sqlite`, with a per-key `failure_count` so a stale script is evicted after `cache_max_failures` (default 2) failed replays instead of being retried forever. Each recorded click/type carries a best-effort durable CSS selector plus the element's text/tag, so replay survives changing snapshot indices; `AgentTier` wires the cache in from config. On by default; disable with `Config(agent_action_cache=False)` or `SCRAPO_AGENT_ACTION_CACHE=0`. The snapshot JS the driver injects now also returns a `sel` (CSS path) for each element, and `LLMAgentDriver.run`'s result dict gains a `replayed` flag.
 - New config / env var: `agent_action_cache` / `SCRAPO_AGENT_ACTION_CACHE`; new `Config.action_cache_db` path.
 
 ### Changed

@@ -304,7 +304,7 @@ diff 9f3e1c...  vs  abc123...
 <details>
 <summary><b>Watch a URL for changes (cheap re-scrapes)</b></summary>
 
-Re-scraping a URL the HTTP tier fetched before sends a conditional GET (`If-None-Match` / `If-Modified-Since`). A `304 Not Modified` is rebuilt from the archived snapshot — **no body transfer, no LLM call** (the selector cache makes re-extraction free), and no duplicate snapshot is written. `scrape()` / `crawl()` get this automatically; `Config(conditional_requests=False)` (or `SCRAPO_CONDITIONAL_REQUESTS=0`) turns it off.
+Re-scraping a URL the HTTP tier fetched before sends a conditional GET (`If-None-Match` / `If-Modified-Since`). A `304 Not Modified` is rebuilt from the archived snapshot: **no body transfer, no LLM call** (the selector cache makes re-extraction free), and no duplicate snapshot is written. `scrape()` / `crawl()` get this automatically; `Config(conditional_requests=False)` (or `SCRAPO_CONDITIONAL_REQUESTS=0`) turns it off.
 
 `watch()` builds the change-tracking loop on top of that:
 
@@ -322,7 +322,7 @@ elif change.changed:
         print(d)                     # e.g. price: '$42' -> '$45'
 ```
 
-`Watch` is in-process — the run history (and the diff) live in the replay store. Persisting a *list* of watches with a built-in scheduler is a hosted-service concern and is intentionally left out.
+`Watch` is in-process: the run history (and the diff) live in the replay store. Persisting a *list* of watches with a built-in scheduler is a hosted-service concern and is intentionally left out.
 
 </details>
 
@@ -343,7 +343,7 @@ Breaking out of the loop early stops the crawl and tears the shared browser down
 
 - **SSRF guard.** Every fetch target is checked before a request goes out; loopback, link-local (including `169.254.169.254`), private RFC 1918 / ULA ranges, and well-known local hostnames are refused. Set `allow_private_hosts=True` (or `SCRAPO_ALLOW_PRIVATE_HOSTS=1`) for internal scraping. Crawl link discovery applies the same filter and skips obvious binary URLs.
 - **Bounded HTTP retries.** Transient `429 / 5xx` and transport errors are retried with exponential backoff and jitter before the router escalates to a heavier tier (`SCRAPO_HTTP_RETRIES`, default `2`).
-- **Rotating proxy pool with health checks.** Hand Scrapo a list of proxy URLs (`Config(proxy_urls=[...])` or `SCRAPO_PROXY_URLS="http://a,http://b"`) and the router round-robins across them. Every fetch's outcome is fed back: an HTTP 4xx auth/rate-limit code or an anti-bot fingerprint parks that proxy for `proxy_cooldown_seconds` (it's an IP-level block); a transient 5xx / network error counts toward `max_failures`; a clean fetch resets the streak. `ProxyPool` implements the `ProxyAdapter` protocol, so it composes with the vendor adapters — pass `upstream=<adapter>` to fall back to a managed gateway when every static endpoint is parked. Credentials are stripped from proxy URLs before they're logged.
+- **Rotating proxy pool with health checks.** Hand Scrapo a list of proxy URLs (`Config(proxy_urls=[...])` or `SCRAPO_PROXY_URLS="http://a,http://b"`) and the router round-robins across them. Every fetch's outcome is fed back: an HTTP 4xx auth/rate-limit code or an anti-bot fingerprint parks that proxy for `proxy_cooldown_seconds` (it's an IP-level block); a transient 5xx / network error counts toward `max_failures`; a clean fetch resets the streak. `ProxyPool` implements the `ProxyAdapter` protocol, so it composes with the vendor adapters; pass `upstream=<adapter>` to fall back to a managed gateway when every static endpoint is parked. Credentials are stripped from proxy URLs before they're logged.
 - **Concurrency-safe storage.** All SQLite stores (replay, selector cache, crawl queue) open in WAL mode with a busy timeout, so concurrent crawl workers do not trip over each other.
 - **Pluggable snapshot storage.** Replay metadata stays in SQLite, but the page bodies go through a `SnapshotStore`: local files by default, or S3 with `snapshot_backend="s3://bucket/prefix"` (`pip install "scrapo[s3]"`).
 - **Browser reuse and lighter pages.** A `TierRouter` launches one headless Chromium lazily and reuses it across fetches (proxy applied per context); the browser tiers also block images/fonts/media/css and surface JSON XHR responses. `TierRouter.aclose()` tears it down; `scrape()` and `crawl()` handle that for you.
@@ -387,7 +387,7 @@ class MyAdapter:
         return ProxyConfig(url="http://user:pass@my-proxy:8080", region=geo)
 ```
 
-Got your own list of proxies instead of a managed gateway? Use the built-in rotating pool — it round-robins, tracks per-endpoint health, and parks one that starts getting blocked:
+Got your own list of proxies instead of a managed gateway? Use the built-in rotating pool: it round-robins, tracks per-endpoint health, and parks one that starts getting blocked:
 
 ```python
 from scrapo.access import ProxyPool
@@ -520,7 +520,7 @@ Issues and PRs welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the dev setup
 
 ## Project status
 
-Alpha. The public API (`scrape`, `extract`, `crawl`, `crawl_stream`, `watch`) is stable, as are tier escalation, model pinning, replay schema, typed results, list extraction, content-type routing, the pluggable snapshot store, the rotating proxy pool, conditional requests, and the MCP tool surface. The reference Tier-4 agent driver — with action caching (record the steps to a goal, replay them token-free, self-heal back to the LLM when a step breaks) — and the in-browser request interception are functional but lightly exercised (a real browser is needed to validate them end to end). The library roadmap is otherwise complete; the only thing intentionally left out is a hosted control plane (a scheduler that runs and persists a list of watches, sends alerts, and gives you a web console) — that's a separate deployable service rather than part of the library.
+Alpha. The public API (`scrape`, `extract`, `crawl`, `crawl_stream`, `watch`) is stable, as are tier escalation, model pinning, replay schema, typed results, list extraction, content-type routing, the pluggable snapshot store, the rotating proxy pool, conditional requests, and the MCP tool surface. The reference Tier-4 agent driver (with action caching: record the steps to a goal, replay them token-free, self-heal back to the LLM when a step breaks) and the in-browser request interception are functional but lightly exercised (a real browser is needed to validate them end to end). The library roadmap is otherwise complete; the only thing intentionally left out is a hosted control plane (a scheduler that runs and persists a list of watches, sends alerts, and gives you a web console). That would be a separate deployable service rather than part of the library.
 
 See [CHANGELOG.md](CHANGELOG.md) for release notes.
 
