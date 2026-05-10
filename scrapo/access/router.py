@@ -30,6 +30,10 @@ class TierRouter:
         if proxy_adapter is None and config.proxy_adapter:
             proxy_adapter = registry.get(config.proxy_adapter)
         self.proxy_adapter = proxy_adapter
+        if agent_driver is None and config.agent_driver == "llm":
+            from scrapo.access.agent_drivers import LLMAgentDriver
+
+            agent_driver = LLMAgentDriver()
         self.http = HttpTier(config, proxy_adapter)
         self.browser = BrowserTier(config, proxy_adapter)
         self.agent = AgentTier(config, agent_driver)
@@ -108,11 +112,12 @@ class TierRouter:
 
     @staticmethod
     def _should_escalate(result: FetchResult) -> bool:
-        return (
-            result.blocked
-            or result.status >= 400
-            or is_thin(result.html)
-            or (result.tier_used in _HTTP_TIERS and is_spa_shell(result.html))
+        if result.blocked or result.status >= 400:
+            return True
+        if result.raw_content is not None:
+            return False  # binary payload (PDF, etc.) - "thin"/SPA checks don't apply
+        return is_thin(result.html) or (
+            result.tier_used in _HTTP_TIERS and is_spa_shell(result.html)
         )
 
     async def _fetch_one(

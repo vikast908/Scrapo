@@ -107,12 +107,12 @@ Plus a feature nobody else ships: **deterministic replay** of every fetch, so ex
 
 ```
 scrapo/
-├── access/      # (1) 5-tier router + pooled browser + Bright Data / Oxylabs / Scrapfly / Zyte
+├── access/      # (1) 5-tier router + pooled browser + request interception + agent driver + proxy adapters
 ├── extract/     # (2) hybrid selector + LLM (scalar & list fields), model pinning, cost-aware budget
-├── shape/       # (3) selectolax markdown + heading chunker
-├── replay/      # (4) snapshot store + field-level diff
+├── shape/       # (3) markdown + heading chunker + content-type dispatch (HTML / JSON / feed / PDF / text)
+├── replay/      # (4) SQLite metadata + pluggable snapshot store (local or S3) + field-level diff
 ├── policy/      # (5) robots, PII (flag or redact), geo, append-only audit
-├── crawl/       # persistent SQLite queue + async scheduler
+├── crawl/       # persistent SQLite queue + async scheduler + sitemap discovery + rel=next pagination
 ├── agent/       # (6) MCP server + tool schemas
 ├── results.py   # typed ScrapeResult / CrawlResult / ExtractionView
 ├── security.py  # SSRF guard for fetch targets
@@ -204,9 +204,24 @@ scrapo diff <run_a> <run_b>    # field-level diff
 | **T1** `HTTP_SESSIONED` | + browser-like headers/cookies | soft anti-bot |
 | **T2** `BROWSER` | Playwright headless | JS-rendered pages, SPA shells |
 | **T3** `BROWSER_STEALTH` | + stealth + residential proxy | hard anti-bot |
-| **T4** `AGENT` | LLM-driven multi-step browser (pluggable driver) | logins, captchas, flows |
+| **T4** `AGENT` | LLM-driven multi-step browser via a pluggable `AgentDriver` (a reference `LLMAgentDriver` ships in; `SCRAPO_AGENT_DRIVER=llm`) | logins, captchas, flows |
 
-Escalation triggers: Cloudflare/Akamai/PerimeterX/DataDome/Distil fingerprints, HTTP `403 / 429 / 503`, empty body, missing required schema fields, and unrendered single-page-app shells (lots of script, almost no rendered text). `Budget(max_tier=..., max_llm_calls=..., max_cost_usd=...)` caps how far it goes.
+Escalation triggers: Cloudflare/Akamai/PerimeterX/DataDome/Distil fingerprints, HTTP `403 / 429 / 503`, empty body, missing required schema fields, and unrendered single-page-app shells (lots of script, almost no rendered text). `Budget(max_tier=..., max_llm_calls=..., max_cost_usd=...)` caps how far it goes. The browser tiers block images/fonts/media/css by default and capture JSON XHR/fetch responses onto the result.
+
+</details>
+
+<details>
+<summary><b>Content-type aware: HTML, JSON, feeds, PDFs</b></summary>
+
+A URL is not always an HTML page, so `scrape()` dispatches on `Content-Type` (with a little body sniffing):
+
+| Content | What you get | `result.kind` |
+|---|---|---|
+| `text/html` | the normal selectolax + markdown + chunk pipeline | `html` |
+| `application/json` / `ld+json` | pretty-printed JSON as markdown; parsed object on `result.data` | `json` |
+| RSS / Atom | a markdown list of entries; parsed items on `result.data` | `feed` |
+| `application/pdf` | extracted text (requires `pip install "scrapo[pdf]"`) | `pdf` |
+| `text/plain` | the body verbatim | `text` |
 
 </details>
 
@@ -289,7 +304,8 @@ diff 9f3e1c...  vs  abc123...
 - **SSRF guard.** Every fetch target is checked before a request goes out; loopback, link-local (including `169.254.169.254`), private RFC 1918 / ULA ranges, and well-known local hostnames are refused. Set `allow_private_hosts=True` (or `SCRAPO_ALLOW_PRIVATE_HOSTS=1`) for internal scraping. Crawl link discovery applies the same filter and skips obvious binary URLs.
 - **Bounded HTTP retries.** Transient `429 / 5xx` and transport errors are retried with exponential backoff and jitter before the router escalates to a heavier tier (`SCRAPO_HTTP_RETRIES`, default `2`).
 - **Concurrency-safe storage.** All SQLite stores (replay, selector cache, crawl queue) open in WAL mode with a busy timeout, so concurrent crawl workers do not trip over each other.
-- **Browser reuse.** A `TierRouter` launches one headless Chromium lazily and reuses it across fetches (proxy applied per context), so a crawl is not paying a cold browser launch per page. `TierRouter.aclose()` tears it down; `scrape()` and `crawl()` handle that for you.
+- **Pluggable snapshot storage.** Replay metadata stays in SQLite, but the page bodies go through a `SnapshotStore`: local files by default, or S3 with `snapshot_backend="s3://bucket/prefix"` (`pip install "scrapo[s3]"`).
+- **Browser reuse and lighter pages.** A `TierRouter` launches one headless Chromium lazily and reuses it across fetches (proxy applied per context); the browser tiers also block images/fonts/media/css and surface JSON XHR responses. `TierRouter.aclose()` tears it down; `scrape()` and `crawl()` handle that for you.
 - **Cost accounting.** LLM cost is computed per call, recorded on the run, and enforceable via `Budget(max_llm_calls=..., max_cost_usd=...)`.
 - **PII handling.** Flag PII in the audit log (`SCRAPO_PII_FILTER=1`), or redact it from the stored snapshot, markdown, and chunks (`SCRAPO_REDACT_SNAPSHOTS=1`).
 - **Local UI hardening.** `scrapo serve` binds `127.0.0.1` by default, validates the `Host` header against an allowlist (anti DNS-rebinding), serializes scrapes, and warns loudly if you bind a public interface.
@@ -410,6 +426,10 @@ Every default is overridable via env var:
 | `SCRAPO_PII_FILTER` | `0` | `1` to flag PII in the audit log |
 | `SCRAPO_REDACT_SNAPSHOTS` | `0` | `1` to redact PII from stored snapshots/markdown/chunks |
 | `SCRAPO_ALLOW_PRIVATE_HOSTS` | `0` | `1` to allow fetching private/loopback addresses |
+| `SCRAPO_SNAPSHOT_BACKEND` | `local` | `local` or `s3://bucket/prefix` |
+| `SCRAPO_BROWSER_BLOCK_RESOURCES` | `1` | `0` to let the browser tier load images/fonts/media/css |
+| `SCRAPO_BROWSER_CAPTURE_XHR` | `1` | `0` to skip capturing JSON XHR/fetch responses |
+| `SCRAPO_AGENT_DRIVER` | unset | `llm` to enable the built-in Tier-4 agent driver |
 | `SCRAPO_PROXY_ADAPTER` | unset | default registered adapter name |
 | `SCRAPO_LLM_ADAPTER` | `anthropic` | default LLM provider |
 | `SCRAPO_LLM_MODEL` | `claude-opus-4-7` | default model id |
@@ -443,7 +463,7 @@ Issues and PRs welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the dev setup
 
 ## Project status
 
-Alpha. The public API (`scrape`, `extract`, `crawl`) is stable; tier escalation, model pinning, replay schema, typed results, list extraction, and the MCP tool surface are stable. Parts that are intentionally lightweight today and slated for hardening: a batteries-included T4 agent driver, full Stagehand-style action caching, in-browser request interception, pagination/sitemap following, content-type routing (PDF/JSON/RSS), an S3 snapshot adapter, and a hosted control plane.
+Alpha. The public API (`scrape`, `extract`, `crawl`) is stable, as are tier escalation, model pinning, replay schema, typed results, list extraction, content-type routing, the pluggable snapshot store, and the MCP tool surface. The reference Tier-4 agent driver and the in-browser request interception are functional but lightly exercised (a real browser is needed to validate them end to end). Still open: recording and safely replaying agent action sequences (Stagehand-style action caching), deeper proxy rotation / health, and a hosted control plane (which would be a separate deployable service rather than part of the library).
 
 See [CHANGELOG.md](CHANGELOG.md) for release notes.
 

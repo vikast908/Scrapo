@@ -25,12 +25,18 @@ _BLOCK_PATTERNS: list[tuple[re.Pattern[str], str]] = [
 ]
 
 
-def detect_block(html: str, status: int) -> tuple[bool, str | None]:
-    """Return (blocked, reason) — works on a small HTML window for speed."""
+def detect_block(html: str, status: int, *, has_body: bool = True) -> tuple[bool, str | None]:
+    """Return (blocked, reason). Works on a small HTML window for speed.
+
+    ``has_body=False`` (non-text content like a PDF, carried out of band) skips the
+    empty-body and HTML-fingerprint checks; only the HTTP status still counts.
+    """
     if status in (401, 403, 407, 429):
         return True, f"http-{status}"
     if status == 503:
         return True, "http-503"
+    if not has_body:
+        return False, None
     sample = html[:8192] if len(html) > 8192 else html
     if not sample.strip():
         return True, "empty-body"
@@ -67,7 +73,9 @@ def is_spa_shell(html: str, *, min_html: int = 1500, max_visible: int = 220) -> 
 
 
 def annotate(result: FetchResult) -> FetchResult:
-    blocked, reason = detect_block(result.html, result.status)
+    blocked, reason = detect_block(
+        result.html, result.status, has_body=result.raw_content is None
+    )
     result.blocked = blocked
     result.block_reason = reason
     return result

@@ -1,23 +1,23 @@
 """SQLite-backed replay store.
 
-Stores raw HTML, response headers, optional screenshot, and the typed
-extraction output for every fetch. The HTML lives on disk under
-{snapshot_dir}/{run_id}.html.gz; the SQLite row tracks metadata + paths.
+Stores response headers, the typed extraction, and a locator for the page body
+of every fetch. Bodies (HTML/JSON gzipped, screenshots raw) go through a pluggable
+:class:`~scrapo.replay.snapshots.SnapshotStore` (local files or S3); the locator
+string it returns is what the ``runs`` table records.
 """
 
 from __future__ import annotations
 
-import gzip
 import json
 import time
 from dataclasses import asdict
-from pathlib import Path
 from typing import Any
 
 import aiosqlite
 
 from scrapo._db import connect
 from scrapo.config import Config
+from scrapo.replay.snapshots import SnapshotStore, from_backend, gunzip, gz
 from scrapo.types import ExtractionResult, FetchResult, RunRecord, Tier
 
 _SCHEMA = """
@@ -46,10 +46,12 @@ CREATE INDEX IF NOT EXISTS idx_runs_schema ON runs(schema_version);
 
 
 class ReplayStore:
-    def __init__(self, config: Config) -> None:
+    def __init__(self, config: Config, snapshots: SnapshotStore | None = None) -> None:
         self.config = config
         self.db_path = config.replay_db
-        self.snapshot_dir = config.snapshot_dir
+        self.snapshots = snapshots or from_backend(
+            config.snapshot_backend, local_root=config.snapshot_dir
+        )
         self._initialized = False
 
     async def _ensure(self) -> None:
@@ -69,17 +71,18 @@ class ReplayStore:
         await self._ensure()
         record.finished_at = record.finished_at or time.time()
 
-        html_path: Path | None = None
-        screenshot_path: Path | None = None
+        html_path: str | None = None
+        screenshot_path: str | None = None
         headers_json: str | None = None
 
         if fetch is not None:
-            if self.config.snapshot_html and fetch.html:
-                html_path = self.snapshot_dir / f"{record.run_id}.html.gz"
-                html_path.write_bytes(gzip.compress(fetch.html.encode("utf-8"), compresslevel=6))
+            blob = fetch.raw_content if fetch.raw_content is not None else (
+                fetch.html.encode("utf-8") if fetch.html else None
+            )
+            if self.config.snapshot_html and blob:
+                html_path = self.snapshots.put(f"{record.run_id}.html.gz", gz(blob))
             if fetch.screenshot_png:
-                screenshot_path = self.snapshot_dir / f"{record.run_id}.png"
-                screenshot_path.write_bytes(fetch.screenshot_png)
+                screenshot_path = self.snapshots.put(f"{record.run_id}.png", fetch.screenshot_png)
             headers_json = json.dumps(fetch.headers)
 
         extraction_json: str | None = None
@@ -107,10 +110,10 @@ class ReplayStore:
                     record.cost_usd,
                     record.llm_calls,
                     record.error,
-                    str(html_path) if html_path else None,
+                    html_path,
                     headers_json,
                     extraction_json,
-                    str(screenshot_path) if screenshot_path else None,
+                    screenshot_path,
                 ),
             )
             await db.commit()
@@ -127,10 +130,10 @@ class ReplayStore:
         rec = await self.get(run_id)
         if not rec or not rec.get("html_path"):
             return None
-        path = Path(rec["html_path"])
-        if not path.exists():
+        raw = self.snapshots.get(rec["html_path"])
+        if raw is None:
             return None
-        return gzip.decompress(path.read_bytes()).decode("utf-8", errors="replace")
+        return gunzip(raw).decode("utf-8", errors="replace")
 
     async def list_runs(self, url: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
         await self._ensure()

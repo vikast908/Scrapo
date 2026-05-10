@@ -99,7 +99,8 @@ class AnthropicAdapter:
 def _strip_fences(text: str) -> str:
     text = text.strip()
     if text.startswith("```"):
-        text = text.split("```", 2)[-1]
+        parts = text.split("```", 2)
+        text = parts[1] if len(parts) >= 2 else ""
         if text.startswith("json"):
             text = text[4:]
     if text.endswith("```"):

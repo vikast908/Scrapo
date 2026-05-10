@@ -322,7 +322,8 @@ def _parse_data_and_selectors(text: str) -> tuple[dict[str, Any] | None, dict[st
         return None, {}
     cleaned = text.strip()
     if cleaned.startswith("```"):
-        cleaned = cleaned.split("```", 2)[-1]
+        parts_fence = cleaned.split("```", 2)
+        cleaned = parts_fence[1] if len(parts_fence) >= 2 else ""
         if cleaned.startswith("json"):
             cleaned = cleaned[4:]
         if cleaned.endswith("```"):

@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-05-10
+
+Roadmap release: content-type routing, sitemap + pagination, in-browser request
+interception, a reference agent driver, and a pluggable (S3-capable) snapshot store.
+
+### Added
+
+- **Content-type routing** (`scrapo.shape.dispatch`): not every URL is an HTML page. JSON / JSON-LD is parsed and exposed on `result.data` (with the pretty-printed body as markdown); RSS / Atom feeds become a markdown list of entries with the items on `result.data`; PDFs are text-extracted via the `[pdf]` extra (`pip install "scrapo[pdf]"`); `text/plain` is passed through verbatim. `result.kind` says which path ran (`html` / `json` / `feed` / `pdf` / `text`). The HTTP tier keeps binary bodies as `FetchResult.raw_content`, and the router no longer mislabels a binary payload as "thin".
+- **Sitemap ingestion + pagination** in `crawl()`: `crawl(..., use_sitemap=True)` seeds from each origin's `sitemap.xml` (following one layer of sitemap index); every crawl now also follows `rel="next"` pagination links (at the same depth, still bounded by `max_pages`). `scrapo.crawl.sitemap.discover_sitemap_urls` is the standalone helper.
+- **In-browser request interception** (`BrowserTier`): images / fonts / media / stylesheets are blocked by default for faster page loads (`browser_block_resources`), and JSON XHR/fetch responses the page makes are surfaced on `FetchResult.captured_json` / `ScrapeResult.captured_json` (`browser_capture_xhr`), so you can read the site's own API instead of scraping rendered DOM.
+- **Reference Tier-4 agent driver** (`scrapo.access.agent_drivers.LLMAgentDriver`): snapshot the visible interactive elements, ask the LLM for one action (click / type / scroll / goto / done), execute it, repeat up to a step limit. Enable with `TierRouter(config, agent_driver=LLMAgentDriver())` or `SCRAPO_AGENT_DRIVER=llm`. Works with any configured LLM adapter.
+- **Pluggable snapshot storage** (`scrapo.replay.snapshots`): the replay store now writes page bodies through a `SnapshotStore`. `snapshot_backend="local"` (default) keeps files under the data dir; `snapshot_backend="s3://bucket/prefix"` (or `SCRAPO_SNAPSHOT_BACKEND`) stores them in S3 via the `[s3]` extra. `ReplayStore` accepts a custom store for anything else.
+- New extras: `[pdf]` (`pypdf`) and `[s3]` (`boto3`); `moto[s3]` added to the dev extra for offline S3 tests.
+- New config / env vars: `SCRAPO_SNAPSHOT_BACKEND`, `SCRAPO_BROWSER_BLOCK_RESOURCES`, `SCRAPO_BROWSER_CAPTURE_XHR`, `SCRAPO_AGENT_DRIVER`.
+
+### Fixed
+
+- Code-fence stripping in the extractor and the Anthropic adapter handled `` ```json ... ``` `` (a closing fence) incorrectly, throwing the content away; it now takes the fenced block's body. The agent driver's action parser uses the corrected logic.
+
+### Not in this release
+
+- "Full Stagehand-style action caching" (recording and safely replaying agent action sequences) builds on the new agent driver and is left for a future release.
+- A hosted control plane is a deployable service rather than a library feature and is out of scope here.
+
 ## [0.3.0] - 2026-05-10
 
 Capability release: typed results, list/nested extraction, and a reused browser.
@@ -88,7 +112,8 @@ Initial public release.
 - The `robots.txt` gate is opt-in: set `SCRAPO_RESPECT_ROBOTS=1` (or `Config(respect_robots=True)`) to enable it. You are responsible for complying with each site's terms of use and applicable law.
 - Alpha status: the public API and core subsystems are stable, but the T4 agent driver, full action caching, an S3 snapshot adapter, and a hosted control plane are intentionally lightweight or not yet implemented.
 
-[Unreleased]: https://github.com/vikast908/Scrapo/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/vikast908/Scrapo/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/vikast908/Scrapo/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/vikast908/Scrapo/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/vikast908/Scrapo/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/vikast908/Scrapo/releases/tag/v0.1.0

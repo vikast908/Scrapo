@@ -79,11 +79,16 @@ class BrowserTier:
         if storage_state:
             ctx_kwargs["storage_state"] = storage_state
 
+        captured: list[dict[str, Any]] = []
         start = time.perf_counter()
         async with self._get_pool().context(**ctx_kwargs) as context:
             if cookies:
                 await context.add_cookies(cookies)
             page = await context.new_page()
+            if self.config.browser_block_resources:
+                await page.route("**/*", _block_heavy_resources)
+            if self.config.browser_capture_xhr:
+                page.on("response", _make_xhr_capturer(captured))
             if tier is Tier.BROWSER_STEALTH:
                 await self._apply_stealth(page)
             response = await page.goto(
@@ -111,6 +116,7 @@ class BrowserTier:
                 elapsed_ms=elapsed_ms,
                 proxy_region=proxy_region,
                 screenshot_png=shot,
+                captured_json=captured[:50],
             )
         )
 
@@ -139,3 +145,34 @@ class BrowserTier:
             from playwright_stealth import Stealth
 
             await Stealth().apply_stealth_async(page)
+
+
+_HEAVY_RESOURCE_TYPES = {"image", "media", "font", "stylesheet"}
+
+
+async def _block_heavy_resources(route: Any) -> None:
+    try:
+        if route.request.resource_type in _HEAVY_RESOURCE_TYPES:
+            await route.abort()
+        else:
+            await route.continue_()
+    except Exception:
+        with contextlib.suppress(Exception):
+            await route.continue_()
+
+
+def _make_xhr_capturer(sink: list[dict[str, Any]]) -> Any:
+    async def _on_response(response: Any) -> None:
+        if len(sink) >= 50:
+            return
+        try:
+            if response.request.resource_type not in ("xhr", "fetch"):
+                return
+            ctype = (response.headers.get("content-type") or "").lower()
+            if "json" not in ctype:
+                return
+            sink.append({"url": response.url, "status": response.status, "json": await response.json()})
+        except Exception:
+            return
+
+    return _on_response

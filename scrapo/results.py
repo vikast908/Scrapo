@@ -53,10 +53,13 @@ class ScrapeResult(_Mappingish):
     blocked: bool = False
     block_reason: str | None = None
     elapsed_ms: float | None = None
+    kind: str = "html"  # "html" | "json" | "feed" | "pdf" | "text"
     title: str | None = None
     markdown: str | None = None
     html: str | None = None
+    data: Any = None  # parsed structure for JSON / feed content
     chunks: list[ChunkView] = Field(default_factory=list)
+    captured_json: list[dict[str, Any]] = Field(default_factory=list)  # XHR/fetch JSON seen in the browser tier
     extraction: ExtractionView | None = None
     cost_usd: float = 0.0
 

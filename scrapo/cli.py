@@ -73,13 +73,16 @@ def crawl(
     max_pages: Annotated[int, typer.Option(help="Page budget")] = 50,
     max_tier: Annotated[int, typer.Option(help="Tier ceiling")] = 2,
     same_host: Annotated[bool, typer.Option(help="Restrict to seed hosts")] = True,
+    use_sitemap: Annotated[bool, typer.Option(help="Also seed from each origin's sitemap.xml")] = False,
     data_dir: Annotated[Path | None, typer.Option(help="Override data dir")] = None,
 ) -> None:
     """Crawl from seed URLs."""
     _load_config(data_dir)
     budget = Budget(max_tier=Tier(max_tier), max_pages=max_pages)
     result = asyncio.run(
-        crawl_api(seed, budget=budget, max_depth=max_depth, same_host_only=same_host)
+        crawl_api(
+            seed, budget=budget, max_depth=max_depth, same_host_only=same_host, use_sitemap=use_sitemap
+        )
     )
     console.print(f"[green]crawl_id:[/green] {result['crawl_id']}")
     table = Table("status", "count")

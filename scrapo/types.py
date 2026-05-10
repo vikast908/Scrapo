@@ -62,12 +62,18 @@ class FetchResult:
     elapsed_ms: float = 0.0
     proxy_region: str | None = None
     screenshot_png: bytes | None = None
+    raw_content: bytes | None = None
+    captured_json: list[dict[str, Any]] = field(default_factory=list)
     blocked: bool = False
     block_reason: str | None = None
 
     @property
     def html_hash(self) -> str:
         return hashlib.sha256(self.html.encode("utf-8", errors="replace")).hexdigest()
+
+    @property
+    def content_type(self) -> str:
+        return (self.headers.get("content-type") or self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
 
 
 @dataclass(slots=True)
@@ -104,12 +110,19 @@ class Chunk:
 
 @dataclass(slots=True)
 class ChunkedDocument:
-    """Markdown + chunks with per-chunk provenance."""
+    """Markdown + chunks with per-chunk provenance.
+
+    ``kind`` is ``"html"`` for ordinary pages, or ``"json"`` / ``"feed"`` /
+    ``"pdf"`` / ``"text"`` when content-type routing produced the document a
+    different way. ``data`` carries the parsed structure for JSON and feeds.
+    """
 
     url: str
     title: str | None
     markdown: str
     chunks: list[Chunk]
+    kind: str = "html"
+    data: Any = None
 
     @property
     def total_tokens_est(self) -> int:

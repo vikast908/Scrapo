@@ -33,9 +33,13 @@ class Config:
     redact_snapshots: bool = False
     audit_enabled: bool = True
     snapshot_html: bool = True
+    snapshot_backend: str = "local"  # "local" or "s3://bucket/prefix"
+    browser_block_resources: bool = True  # drop images/fonts/media/css in the browser tier
+    browser_capture_xhr: bool = True  # surface JSON XHR/fetch responses on FetchResult
     allow_private_hosts: bool = False
     http_retries: int = 2
     proxy_adapter: str | None = None
+    agent_driver: str | None = None  # "llm" to use the built-in LLMAgentDriver at tier 4
     llm_adapter: str | None = "anthropic"
     llm_model: str = "claude-opus-4-7"
     geo: str | None = None
@@ -75,9 +79,13 @@ class Config:
             respect_robots=os.environ.get("SCRAPO_RESPECT_ROBOTS", "0") == "1",
             enable_pii_filter=os.environ.get("SCRAPO_PII_FILTER", "0") == "1",
             redact_snapshots=os.environ.get("SCRAPO_REDACT_SNAPSHOTS", "0") == "1",
+            snapshot_backend=os.environ.get("SCRAPO_SNAPSHOT_BACKEND", "local"),
+            browser_block_resources=os.environ.get("SCRAPO_BROWSER_BLOCK_RESOURCES", "1") == "1",
+            browser_capture_xhr=os.environ.get("SCRAPO_BROWSER_CAPTURE_XHR", "1") == "1",
             allow_private_hosts=os.environ.get("SCRAPO_ALLOW_PRIVATE_HOSTS", "0") == "1",
             http_retries=int(os.environ.get("SCRAPO_HTTP_RETRIES", "2")),
             proxy_adapter=os.environ.get("SCRAPO_PROXY_ADAPTER") or None,
+            agent_driver=os.environ.get("SCRAPO_AGENT_DRIVER") or None,
             llm_adapter=os.environ.get("SCRAPO_LLM_ADAPTER", "anthropic"),
             llm_model=os.environ.get("SCRAPO_LLM_MODEL", "claude-opus-4-7"),
             geo=os.environ.get("SCRAPO_GEO") or None,

@@ -25,6 +25,7 @@ from selectolax.parser import HTMLParser
 from scrapo.config import Config
 from scrapo.crawl.dedup import UrlDeduper, normalize_url
 from scrapo.crawl.queue import RequestQueue
+from scrapo.crawl.sitemap import discover_sitemap_urls
 from scrapo.policy.robots import RobotsGate
 from scrapo.results import ScrapeResult
 from scrapo.security import is_url_allowed
@@ -69,15 +70,30 @@ class CrawlScheduler:
         budget: Budget | None = None,
         max_depth: int = 2,
         same_host_only: bool = True,
+        use_sitemap: bool = False,
         on_page: PageHandler | None = None,
     ) -> dict[str, int]:
         budget = budget or Budget(max_tier=self.config.default_max_tier, max_pages=200)
-        for seed in seeds:
-            n = normalize_url(seed)
-            if self.dedup.add(n):
-                await self.queue.enqueue(n, depth=0)
-
         seed_hosts = {urlparse(s).netloc for s in seeds}
+
+        async def _enqueue(u: str, *, depth: int, parent: str | None) -> None:
+            if same_host_only and urlparse(u).netloc not in seed_hosts:
+                return
+            n = normalize_url(u)
+            if self.dedup.add(n):
+                await self.queue.enqueue(n, depth=depth, parent_url=parent)
+
+        for seed in seeds:
+            await _enqueue(seed, depth=0, parent=None)
+        if use_sitemap:
+            origins = {f"{p.scheme}://{p.netloc}" for p in (urlparse(s) for s in seeds) if p.netloc}
+            for origin in origins:
+                for u in await discover_sitemap_urls(origin, user_agent=self.config.user_agent):
+                    if u.startswith(("http://", "https://")) and not urlsplit(u).path.lower().endswith(
+                        _SKIP_LINK_EXTENSIONS
+                    ) and is_url_allowed(u, allow_private=self.config.allow_private_hosts):
+                        await _enqueue(u, depth=0, parent=None)
+
         sem = asyncio.Semaphore(self.config.max_concurrency)
         pages_done = 0
         in_flight = 0
@@ -101,13 +117,14 @@ class CrawlScheduler:
                 pages_done += 1
                 if on_page:
                     await on_page(result)
+                html = result.get("html") or ""
+                # follow rel="next" pagination at the same depth (max_pages still bounds it)
+                next_url = _next_link(url, html)
+                if next_url:
+                    await _enqueue(next_url, depth=depth, parent=url)
                 if depth < max_depth:
-                    for link in self._extract_links(url, result.get("html", "")):
-                        if same_host_only and urlparse(link).netloc not in seed_hosts:
-                            continue
-                        if not self.dedup.add(link):
-                            continue
-                        await self.queue.enqueue(link, depth=depth + 1, parent_url=url)
+                    for link in self._extract_links(url, html):
+                        await _enqueue(link, depth=depth + 1, parent=url)
             except Exception as e:
                 log.warning("scrapo.crawl.fetch_error", url=url, err=str(e))
                 await self.queue.fail(req["id"], str(e), retry=req["attempts"] < 2)
@@ -162,3 +179,21 @@ class CrawlScheduler:
                 continue
             out.append(normalize_url(absu))
         return out
+
+
+def _next_link(base_url: str, html: str) -> str | None:
+    """Find a rel="next" pagination link (<link rel=next> or <a rel=next>)."""
+    if not html or "next" not in html.lower():
+        return None
+    tree = HTMLParser(html)
+    for sel in ('link[rel~="next"]', 'a[rel~="next"]'):
+        node = tree.css_first(sel)
+        if node is None or not node.attributes:
+            continue
+        href = (node.attributes.get("href") or "").strip()
+        if not href or href.startswith(("javascript:", "mailto:", "tel:", "#", "data:")):
+            continue
+        absu = urljoin(base_url, href)
+        if absu.startswith(("http://", "https://")):
+            return absu
+    return None

@@ -26,6 +26,7 @@ from scrapo.policy.robots import RobotsGate
 from scrapo.replay.store import ReplayStore
 from scrapo.results import ChunkView, CrawlResult, ExtractionView, ScrapeResult
 from scrapo.security import SsrfError, check_url
+from scrapo.shape.dispatch import shape_fetch
 from scrapo.shape.provenance import shape_document
 from scrapo.types import Budget, ChunkedDocument, ExtractionResult, FetchResult, RunRecord, Tier
 
@@ -129,7 +130,7 @@ async def scrape(
             url_=fetch.final_url, status=fetch.status, tier=fetch.tier_used.label, reason=record.error
         )
 
-    document = shape_document(fetch.html, url)
+    document = shape_fetch(fetch, url)
 
     extraction: ExtractionResult | None = None
     if schema is not None:
@@ -208,12 +209,17 @@ async def crawl(
     budget: Budget | None = None,
     max_depth: int = 2,
     same_host_only: bool = True,
+    use_sitemap: bool = False,
     proxy_adapter: ProxyAdapter | None = None,
     llm_adapter: LLMAdapter | None = None,
     pin: PinnedModel | None = None,
     on_page: Callable[[ScrapeResult], Awaitable[None]] | None = None,
 ) -> CrawlResult:
-    """Recursive crawl. Each page goes through the same pipeline as scrape()."""
+    """Recursive crawl. Each page goes through the same pipeline as scrape().
+
+    Follows ``rel="next"`` pagination automatically. With ``use_sitemap=True`` it
+    also seeds from each origin's ``sitemap.xml`` (and any sitemap index it points to).
+    """
     from scrapo.crawl.scheduler import CrawlScheduler
 
     cfg = config or get_config()
@@ -237,6 +243,7 @@ async def crawl(
             budget=budget,
             max_depth=max_depth,
             same_host_only=same_host_only,
+            use_sitemap=use_sitemap,
             on_page=on_page,
         )
     finally:
@@ -273,12 +280,15 @@ def _build_result(
         blocked=fetch.blocked,
         block_reason=fetch.block_reason,
         elapsed_ms=fetch.elapsed_ms,
+        kind=document.kind,
         title=document.title,
         markdown=document.markdown,
         html=fetch.html,
+        data=document.data,
         chunks=[
             ChunkView(text=c.text, provenance=c.provenance.to_dict()) for c in document.chunks
         ],
+        captured_json=list(fetch.captured_json),
         extraction=extraction_view,
         cost_usd=record.cost_usd,
     )

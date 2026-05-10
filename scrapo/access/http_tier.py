@@ -87,16 +87,22 @@ class HttpTier:
                 try:
                     resp = await client.get(url)
                     elapsed_ms = (time.perf_counter() - start) * 1000.0
+                    headers = dict(resp.headers)
+                    ctype = (headers.get("content-type") or "").split(";")[0].strip().lower()
+                    is_binary = ctype == "application/pdf" or ctype.startswith(
+                        ("image/", "audio/", "video/", "font/")
+                    ) or ctype in ("application/octet-stream", "application/zip", "application/gzip")
                     last = annotate(
                         FetchResult(
                             url=url,
                             final_url=str(resp.url),
                             status=resp.status_code,
-                            html=resp.text,
-                            headers=dict(resp.headers),
+                            html="" if is_binary else resp.text,
+                            headers=headers,
                             tier_used=tier,
                             elapsed_ms=elapsed_ms,
                             proxy_region=proxy_region,
+                            raw_content=resp.content if is_binary else None,
                         )
                     )
                     if resp.status_code not in _RETRYABLE_STATUS:

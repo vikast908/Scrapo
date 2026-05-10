@@ -8,7 +8,7 @@ If you have ever copied information off a web page by hand, or wished a program 
 
 ## What it actually does
 
-- **Turns messy web pages into clean text.** A typical web page is full of menus, ads, popups, and code. Scrapo strips all that out and gives you just the content, as Markdown (simple, readable text).
+- **Turns messy web pages into clean text.** A typical web page is full of menus, ads, popups, and code. Scrapo strips all that out and gives you just the content, as Markdown (simple, readable text). It also handles things that are not web pages: JSON feeds, RSS/Atom feeds, and PDFs all come back in a usable form rather than as garbage.
 - **Pulls out specific facts.** Tell it "I want the product name and price from these pages" and it returns exactly those fields, in the same shape, for every page.
 - **Handles modern, complicated websites.** Some sites only show their content after running code in your browser; some actively try to block automated visitors. Scrapo starts with the fast, simple approach and automatically escalates (to a real, invisible browser, then a "stealth" browser, then an AI that can click around) only when it actually needs to.
 - **Learns once, then works for free.** The first time it extracts data from a site, it can use an AI model to figure out where the information lives. It remembers that "recipe," so future runs do not need the AI at all, which keeps costs near zero. If the site's layout changes, it notices, re-learns, and keeps going; a recipe that keeps failing is thrown away so the next run starts fresh.
@@ -39,9 +39,9 @@ If you have ever copied information off a web page by hand, or wished a program 
 
 - **It is not a no-code, point-and-click product.** You need to write a little Python or use the command line. The built-in web page is intentionally minimal; it is for trying things, not a polished app.
 - **It cannot magically beat every site's defenses.** Aggressive bot protection and CAPTCHAs are genuinely hard. A proxy provider helps a lot, but nothing is guaranteed. The most advanced mode (an AI that drives a browser through logins and CAPTCHAs) exists but is lightweight and experimental today, and ships without a default driver.
-- **It will not log into sites for you by default.** You can supply credentials or a saved login session, but automated login flows are still experimental.
+- **Logging into sites is experimental.** There is a built-in "agent" mode where an AI clicks through a page toward a goal (logins, simple forms), but it is new and unproven; for anything important, supply credentials or a saved login session yourself.
 - **There is no hosted dashboard or scheduler.** Scrapo does not run your jobs in the cloud, send alerts, or give you a web console to manage everything. You run and schedule it yourself.
-- **It is alpha software.** The core works and is stable, but expect rough edges. Some pieces (a ready-made agent driver, in-browser request interception, following "next page" links and sitemaps, cloud snapshot storage, advanced action caching, a hosted control plane) are planned, not built.
+- **It is alpha software.** The core works and is stable, but expect rough edges. A few pieces are still planned, not built: remembering and replaying the steps the agent took on a site, smarter proxy rotation, and a hosted service to run and monitor your jobs for you (that last one would be a separate product, not part of the library).
 - **AI extraction costs money.** The first run on a new site (or after a layout change) calls a paid AI model. Scrapo is designed to minimize this (most runs use the free cached recipe) but it is not literally free.
 - **It is not legal advice or a compliance guarantee.** The robots rules, personal-data flagging, geo limits, and audit log are *tools* to help you scrape responsibly. You are still responsible for following each site's terms and the law. (Note: robots-rule enforcement is off by default; you have to turn it on.)
 - **It is Python-only.** No JavaScript, Java, Go, etc. versions. Requires Python 3.11 or newer.
