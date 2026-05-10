@@ -1,4 +1,3 @@
-from typing import Optional
 
 import pytest
 from pydantic import BaseModel
@@ -12,7 +11,7 @@ from scrapo.extract.selector_cache import SelectorCache
 
 class Product(BaseModel):
     name: str
-    price: Optional[str] = None
+    price: str | None = None
 
 
 class FakeLLM:
@@ -118,3 +117,62 @@ async def test_pin_mismatch_raises(cache):
         await extractor.extract(
             url="https://example.com/x", html=PAGE_HTML, markdown=PAGE_MD, model=Product
         )
+
+
+async def test_subdomains_do_not_share_selectors(cache):
+    sh = schema_hash(Product)
+    await cache.put("https://shop.example.com/p", sh, {"name": {"selector": "h1", "type": "css"}})
+    assert "name" in await cache.get("https://shop.example.com/p", sh)
+    assert await cache.get("https://blog.example.com/p", sh) == {}
+
+
+async def test_stale_selectors_evicted_after_repeated_failures(cache):
+    from scrapo.extract.hybrid import STALE_SELECTOR_THRESHOLD
+
+    sh = schema_hash(Product)
+    await cache.put("https://e.com/p", sh, {"name": {"selector": ".does-not-exist", "type": "css"}})
+    bad_html = "<html><body><h1>Unrelated</h1></body></html>"
+    extractor = HybridExtractor(cache, llm=FakeLLM('{"name": "from-llm"}'))
+
+    for _ in range(STALE_SELECTOR_THRESHOLD):
+        result = await extractor.extract(
+            url="https://e.com/p", html=bad_html, markdown="x", model=Product
+        )
+        assert result.method == "llm"
+
+    assert await cache.get("https://e.com/p", sh) == {}
+
+
+async def test_extract_respects_llm_budget(cache):
+    from scrapo.types import Budget
+
+    llm = FakeLLM('{"name": "x"}')
+    result = await HybridExtractor(cache, llm=llm).extract(
+        url="https://e.com/p",
+        html="<html></html>",
+        markdown="x",
+        model=Product,
+        budget=Budget(max_llm_calls=0),
+    )
+    assert result.method == "none"
+    assert llm.calls == 0
+
+
+async def test_cost_propagates_from_llm_response(cache):
+    class CostLLM:
+        provider = "x"
+        model_id = "x-1"
+
+        async def extract_json(self, prompt, *, schema=None, max_tokens=2048):
+            return LLMResponse(
+                text='{"name": "y"}',
+                json_payload={"name": "y"},
+                provider="x",
+                model_id="x-1",
+                cost_usd=0.0042,
+            )
+
+    result = await HybridExtractor(cache, llm=CostLLM()).extract(
+        url="https://e.com/p", html="<html></html>", markdown="x", model=Product
+    )
+    assert result.cost_usd == 0.0042

@@ -14,6 +14,7 @@ from typing import Any
 
 import aiosqlite
 
+from scrapo._db import connect
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS requests (
@@ -45,7 +46,7 @@ class RequestQueue:
     async def _ensure(self) -> None:
         if self._initialized:
             return
-        async with aiosqlite.connect(self.db_path) as db:
+        async with connect(self.db_path) as db:
             await db.executescript(_SCHEMA)
             await db.commit()
         self._initialized = True
@@ -58,7 +59,7 @@ class RequestQueue:
         metadata: dict[str, Any] | None = None,
     ) -> bool:
         await self._ensure()
-        async with self._lock, aiosqlite.connect(self.db_path) as db:
+        async with self._lock, connect(self.db_path) as db:
             try:
                 await db.execute(
                     "INSERT INTO requests(crawl_id, url, depth, parent_url, metadata, enqueued_at) "
@@ -79,7 +80,7 @@ class RequestQueue:
 
     async def claim(self) -> dict[str, Any] | None:
         await self._ensure()
-        async with self._lock, aiosqlite.connect(self.db_path) as db:
+        async with self._lock, connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute(
                 "SELECT * FROM requests WHERE crawl_id=? AND status='pending' "
@@ -104,7 +105,7 @@ class RequestQueue:
 
     async def complete(self, request_id: int) -> None:
         await self._ensure()
-        async with aiosqlite.connect(self.db_path) as db:
+        async with connect(self.db_path) as db:
             await db.execute(
                 "UPDATE requests SET status='done', finished_at=? WHERE id=?",
                 (time.time(), request_id),
@@ -114,7 +115,7 @@ class RequestQueue:
     async def fail(self, request_id: int, error: str, retry: bool = True) -> None:
         await self._ensure()
         new_status = "pending" if retry else "failed"
-        async with aiosqlite.connect(self.db_path) as db:
+        async with connect(self.db_path) as db:
             await db.execute(
                 "UPDATE requests SET status=?, error=?, claimed_at=NULL WHERE id=?",
                 (new_status, error[:500], request_id),
@@ -123,7 +124,7 @@ class RequestQueue:
 
     async def stats(self) -> dict[str, int]:
         await self._ensure()
-        async with aiosqlite.connect(self.db_path) as db:
+        async with connect(self.db_path) as db:
             cur = await db.execute(
                 "SELECT status, COUNT(*) FROM requests WHERE crawl_id=? GROUP BY status",
                 (self.crawl_id,),

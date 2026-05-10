@@ -7,7 +7,8 @@ policy gate into three small async functions.
 from __future__ import annotations
 
 import time
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 import structlog
 from pydantic import BaseModel
@@ -21,9 +22,10 @@ from scrapo.extract.pinning import PinnedModel
 from scrapo.extract.selector_cache import SelectorCache
 from scrapo.policy.audit import AuditLog
 from scrapo.policy.geo import GeoPolicy
-from scrapo.policy.pii import PiiClassifier
+from scrapo.policy.pii import PiiClassifier, redact
 from scrapo.policy.robots import RobotsGate
 from scrapo.replay.store import ReplayStore
+from scrapo.security import SsrfError, check_url
 from scrapo.shape.provenance import shape_document
 from scrapo.types import Budget, ChunkedDocument, ExtractionResult, FetchResult, RunRecord, Tier
 
@@ -56,6 +58,22 @@ async def scrape(
     audit = AuditLog(cfg.audit_log, enabled=cfg.audit_enabled)
     replay = ReplayStore(cfg)
 
+    try:
+        check_url(url, allow_private=cfg.allow_private_hosts)
+    except SsrfError as exc:
+        record.error = f"ssrf-blocked:{exc}"
+        record.finished_at = time.time()
+        await audit.record("scrape.blocked", run_id=record.run_id, url=url, reason="ssrf")
+        await replay.record(record, None, None)
+        return {
+            "run_id": record.run_id,
+            "url": url,
+            "status": None,
+            "tier_used": None,
+            "blocked": True,
+            "block_reason": record.error,
+        }
+
     if cfg.respect_robots:
         robots = RobotsGate(cfg.user_agent)
         if not await robots.can_fetch(url):
@@ -85,6 +103,22 @@ async def scrape(
     record.proxy_region = fetch.proxy_region
     record.fetch_status = fetch.status
 
+    if fetch.blocked:
+        record.error = fetch.block_reason or "blocked"
+        record.finished_at = time.time()
+        await audit.record(
+            "scrape.blocked", run_id=record.run_id, url=url, reason=fetch.block_reason
+        )
+        await replay.record(record, fetch, None)
+        return {
+            "run_id": record.run_id,
+            "url": fetch.final_url,
+            "status": fetch.status,
+            "tier_used": fetch.tier_used.label,
+            "blocked": True,
+            "block_reason": record.error,
+        }
+
     if geo_policy and not geo_policy.is_allowed(fetch.proxy_region):
         record.error = f"geo-policy-violation:{fetch.proxy_region}"
         record.finished_at = time.time()
@@ -112,11 +146,13 @@ async def scrape(
             html=fetch.html,
             markdown=document.markdown,
             model=schema,
+            budget=budget,
         )
         record.extraction_method = extraction.method
         record.model_pinned = extraction.model_pinned
         record.schema_version = extraction.schema_version
         record.llm_calls = extraction.llm_calls
+        record.cost_usd = extraction.cost_usd
 
     if cfg.enable_pii_filter:
         pii = PiiClassifier()
@@ -129,6 +165,12 @@ async def scrape(
                 kinds=sorted({h.kind for h in hits}),
                 count=len(hits),
             )
+
+    if cfg.redact_snapshots:
+        fetch.html = redact(fetch.html)
+        document.markdown = redact(document.markdown)
+        for chunk in document.chunks:
+            chunk.text = redact(chunk.text)
 
     record.finished_at = time.time()
     await replay.record(record, fetch, extraction)

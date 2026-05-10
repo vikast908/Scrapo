@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "scrapo"
-version = "0.1.0"
+version = "0.2.0"
 description = "AI-native, agent-first web scraping library with deterministic replay"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -15,9 +15,11 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Topic :: Internet :: WWW/HTTP :: Indexing/Search",
+    "Typing :: Typed",
 ]
 
 dependencies = [
@@ -27,12 +29,10 @@ dependencies = [
     "markdownify>=0.12",
     "aiosqlite>=0.20",
     "structlog>=24.1",
-    "tldextract>=5.1",
     "typer>=0.12",
     "rich>=13.7",
     "anyio>=4.3",
     "platformdirs>=4.2",
-    "tenacity>=8.3",
 ]
 
 [project.optional-dependencies]
@@ -53,10 +53,16 @@ dev = [
     "pytest>=8.2",
     "pytest-asyncio>=0.23",
     "pytest-httpx>=0.30",
+    "pytest-cov>=5.0",
     "ruff>=0.5",
     "mypy>=1.10",
     "respx>=0.21",
 ]
+
+[project.urls]
+Homepage = "https://github.com/vikast908/Scrapo"
+Repository = "https://github.com/vikast908/Scrapo"
+Changelog = "https://github.com/vikast908/Scrapo/blob/main/CHANGELOG.md"
 
 [project.scripts]
 scrapo = "scrapo.cli:app"
@@ -70,7 +76,12 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "N", "ASYNC", "S", "RET", "SIM", "TID"]
-ignore = ["E501", "S101"]
+# E501: line length handled by formatter; S101: assert is fine in tests/invariants;
+# ASYNC240: small local snapshot file I/O does not warrant trio/anyio.Path.
+ignore = ["E501", "S101", "ASYNC240"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S105", "S106", "S311"]
 
 [tool.mypy]
 python_version = "3.11"
@@ -81,3 +92,7 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["scrapo"]
+omit = ["scrapo/agent/mcp_server.py"]

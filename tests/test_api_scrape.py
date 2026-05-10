@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 import pytest
 from pydantic import BaseModel
 
 from scrapo.api import scrape
 from scrapo.types import Budget, FetchResult, Tier
-
 
 PAGE = """\
 <!doctype html><html><head><title>Demo</title></head>
@@ -26,6 +23,26 @@ class FakeHttp:
             url=url, final_url=url, status=200, html=PAGE,
             headers={"content-type": "text/html"}, tier_used=Tier.HTTP,
         )
+
+
+class BlockedHttp:
+    async def fetch(self, url, **kwargs):
+        return FetchResult(
+            url=url, final_url=url, status=403, html="", headers={}, tier_used=Tier.HTTP,
+            blocked=True, block_reason="http-403",
+        )
+
+
+def _stub_router(monkeypatch, http_tier):
+    from scrapo import api
+
+    class StubRouter(api.TierRouter):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+            self.http = http_tier
+            self.browser = http_tier
+
+    monkeypatch.setattr(api, "TierRouter", StubRouter)
 
 
 @pytest.mark.asyncio
@@ -72,7 +89,7 @@ async def test_scrape_robots_blocked_result_includes_url(isolated_config, monkey
 
 
 class TinyDoc(BaseModel):
-    title: Optional[str] = None
+    title: str | None = None
 
 
 @pytest.mark.asyncio
@@ -97,3 +114,30 @@ async def test_scrape_with_schema_records_extraction(isolated_config, monkeypatc
     )
     assert "extraction" in result
     assert result["extraction"]["schema_version"].startswith("TinyDoc@")
+
+
+@pytest.mark.asyncio
+async def test_scrape_blocks_internal_url(isolated_config):
+    result = await scrape("http://localhost:6379/", config=isolated_config)
+    assert result["blocked"] is True
+    assert result["block_reason"].startswith("ssrf-blocked:")
+    assert result["status"] is None
+
+
+@pytest.mark.asyncio
+async def test_scrape_allows_internal_url_when_configured(isolated_config, monkeypatch):
+    _stub_router(monkeypatch, FakeHttp())
+    isolated_config.allow_private_hosts = True
+    result = await scrape("http://localhost:8080/", config=isolated_config)
+    assert not result["blocked"]
+    assert "Hello" in result["markdown"]
+
+
+@pytest.mark.asyncio
+async def test_scrape_short_circuits_on_fetch_block(isolated_config, monkeypatch):
+    _stub_router(monkeypatch, BlockedHttp())
+    result = await scrape("https://example.com/", config=isolated_config)
+    assert result["blocked"] is True
+    assert result["block_reason"] == "http-403"
+    assert result["status"] == 403
+    assert "markdown" not in result

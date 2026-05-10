@@ -1,7 +1,13 @@
-"""Selector cache — keyed by (domain, schema_hash), backed by SQLite.
+"""Selector cache, keyed by (host, schema_hash), backed by SQLite.
 
 The hybrid extractor populates this cache the first time the LLM successfully
 extracts a schema; subsequent runs hit the cache and avoid LLM calls entirely.
+
+Keyed by the full host (not the registered domain), because ``blog.example.com``
+and ``shop.example.com`` are usually built differently and must not share
+selectors. A ``failure_count`` is tracked per (host, schema) so the extractor can
+evict an entry that keeps failing validation instead of paying the LLM fallback
+on every run forever.
 """
 
 from __future__ import annotations
@@ -9,14 +15,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
-import aiosqlite
-import tldextract
-
+from scrapo._db import connect
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS selectors (
-    domain TEXT NOT NULL,
+    host TEXT NOT NULL,
     schema_hash TEXT NOT NULL,
     field_name TEXT NOT NULL,
     selector TEXT NOT NULL,
@@ -25,17 +30,20 @@ CREATE TABLE IF NOT EXISTS selectors (
     success_count INTEGER DEFAULT 0,
     failure_count INTEGER DEFAULT 0,
     updated_at REAL DEFAULT (strftime('%s','now')),
-    PRIMARY KEY (domain, schema_hash, field_name)
+    PRIMARY KEY (host, schema_hash, field_name)
 );
-CREATE INDEX IF NOT EXISTS idx_selectors_lookup ON selectors(domain, schema_hash);
+CREATE INDEX IF NOT EXISTS idx_selectors_lookup ON selectors(host, schema_hash);
 """
 
 
-def _domain(url: str) -> str:
-    parts = tldextract.extract(url)
-    if parts.registered_domain:
-        return parts.registered_domain.lower()
-    return parts.domain.lower() if parts.domain else url.lower()
+def _host(url: str) -> str:
+    netloc = urlsplit(url).netloc.lower()
+    # strip userinfo and port
+    if "@" in netloc:
+        netloc = netloc.rsplit("@", 1)[1]
+    if netloc.startswith("["):  # IPv6 literal
+        return netloc.split("]", 1)[0] + "]"
+    return netloc.rsplit(":", 1)[0] if ":" in netloc else netloc or url.lower()
 
 
 class SelectorCache:
@@ -46,19 +54,19 @@ class SelectorCache:
     async def _ensure(self) -> None:
         if self._initialized:
             return
-        async with aiosqlite.connect(self.db_path) as db:
+        async with connect(self.db_path) as db:
             await db.executescript(_SCHEMA)
             await db.commit()
         self._initialized = True
 
     async def get(self, url: str, schema_hash: str) -> dict[str, dict[str, Any]]:
         await self._ensure()
-        domain = _domain(url)
-        async with aiosqlite.connect(self.db_path) as db:
+        host = _host(url)
+        async with connect(self.db_path) as db:
             cur = await db.execute(
                 "SELECT field_name, selector, selector_type, extra "
-                "FROM selectors WHERE domain=? AND schema_hash=?",
-                (domain, schema_hash),
+                "FROM selectors WHERE host=? AND schema_hash=?",
+                (host, schema_hash),
             )
             rows = await cur.fetchall()
         out: dict[str, dict[str, Any]] = {}
@@ -77,17 +85,17 @@ class SelectorCache:
         selectors: dict[str, dict[str, Any]],
     ) -> None:
         await self._ensure()
-        domain = _domain(url)
-        async with aiosqlite.connect(self.db_path) as db:
+        host = _host(url)
+        async with connect(self.db_path) as db:
             for field_name, spec in selectors.items():
                 await db.execute(
-                    "INSERT INTO selectors(domain, schema_hash, field_name, selector, selector_type, extra) "
-                    "VALUES (?,?,?,?,?,?) "
-                    "ON CONFLICT(domain, schema_hash, field_name) DO UPDATE SET "
+                    "INSERT INTO selectors(host, schema_hash, field_name, selector, "
+                    "selector_type, extra, failure_count) VALUES (?,?,?,?,?,?,0) "
+                    "ON CONFLICT(host, schema_hash, field_name) DO UPDATE SET "
                     "selector=excluded.selector, selector_type=excluded.selector_type, "
-                    "extra=excluded.extra, updated_at=strftime('%s','now')",
+                    "extra=excluded.extra, failure_count=0, updated_at=strftime('%s','now')",
                     (
-                        domain,
+                        host,
                         schema_hash,
                         field_name,
                         spec["selector"],
@@ -99,32 +107,39 @@ class SelectorCache:
 
     async def record_success(self, url: str, schema_hash: str) -> None:
         await self._ensure()
-        domain = _domain(url)
-        async with aiosqlite.connect(self.db_path) as db:
+        host = _host(url)
+        async with connect(self.db_path) as db:
             await db.execute(
-                "UPDATE selectors SET success_count = success_count + 1 "
-                "WHERE domain=? AND schema_hash=?",
-                (domain, schema_hash),
+                "UPDATE selectors SET success_count = success_count + 1, failure_count = 0 "
+                "WHERE host=? AND schema_hash=?",
+                (host, schema_hash),
             )
             await db.commit()
 
-    async def record_failure(self, url: str, schema_hash: str) -> None:
+    async def record_failure(self, url: str, schema_hash: str) -> int:
+        """Increment the failure counter; return the highest failure count for the key."""
         await self._ensure()
-        domain = _domain(url)
-        async with aiosqlite.connect(self.db_path) as db:
+        host = _host(url)
+        async with connect(self.db_path) as db:
             await db.execute(
                 "UPDATE selectors SET failure_count = failure_count + 1 "
-                "WHERE domain=? AND schema_hash=?",
-                (domain, schema_hash),
+                "WHERE host=? AND schema_hash=?",
+                (host, schema_hash),
             )
             await db.commit()
+            cur = await db.execute(
+                "SELECT COALESCE(MAX(failure_count), 0) FROM selectors WHERE host=? AND schema_hash=?",
+                (host, schema_hash),
+            )
+            row = await cur.fetchone()
+        return int(row[0]) if row else 0
 
     async def invalidate(self, url: str, schema_hash: str) -> None:
         await self._ensure()
-        domain = _domain(url)
-        async with aiosqlite.connect(self.db_path) as db:
+        host = _host(url)
+        async with connect(self.db_path) as db:
             await db.execute(
-                "DELETE FROM selectors WHERE domain=? AND schema_hash=?",
-                (domain, schema_hash),
+                "DELETE FROM selectors WHERE host=? AND schema_hash=?",
+                (host, schema_hash),
             )
             await db.commit()

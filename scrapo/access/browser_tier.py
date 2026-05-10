@@ -1,7 +1,8 @@
-"""T2 / T3 — Playwright-based browser fetch with optional stealth."""
+"""T2 / T3: Playwright-based browser fetch with optional stealth."""
 
 from __future__ import annotations
 
+import contextlib
 import time
 from typing import Any
 
@@ -84,10 +85,8 @@ class BrowserTier:
                     wait_until="domcontentloaded",
                 )
                 if wait_for:
-                    try:
+                    with contextlib.suppress(Exception):
                         await page.wait_for_selector(wait_for, timeout=10_000)
-                    except Exception:
-                        pass
 
                 html = await page.content()
                 status = response.status if response else 0

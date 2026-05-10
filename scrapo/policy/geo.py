@@ -24,7 +24,7 @@ class GeoPolicy:
         return region_l in self.allowed
 
     @classmethod
-    def eu_only(cls) -> "GeoPolicy":
+    def eu_only(cls) -> GeoPolicy:
         eu = frozenset(
             {
                 "at", "be", "bg", "cy", "cz", "de", "dk", "ee", "es", "fi",

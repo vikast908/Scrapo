@@ -27,7 +27,7 @@ class PinnedModel:
         return PinnedModel(provider=provider, model_id=model_id, prompt_template_hash=h)
 
 
-class PinViolation(RuntimeError):
+class PinViolation(RuntimeError):  # noqa: N818 - public exception name, stable since 0.1
     """Raised when extraction would use a model that doesn't match the pin."""
 
 

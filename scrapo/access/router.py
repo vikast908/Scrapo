@@ -8,9 +8,11 @@ from scrapo.access.adapters.base import ProxyAdapter, registry
 from scrapo.access.agent_tier import AgentDriver, AgentTier
 from scrapo.access.browser_tier import BrowserTier
 from scrapo.access.http_tier import HttpTier
-from scrapo.access.signals import is_thin
+from scrapo.access.signals import is_spa_shell, is_thin
 from scrapo.config import Config
 from scrapo.types import Budget, FetchResult, Tier
+
+_HTTP_TIERS = (Tier.HTTP, Tier.HTTP_SESSIONED)
 
 log = structlog.get_logger(__name__)
 
@@ -99,13 +101,12 @@ class TierRouter:
 
     @staticmethod
     def _should_escalate(result: FetchResult) -> bool:
-        if result.blocked:
-            return True
-        if result.status >= 400:
-            return True
-        if is_thin(result.html):
-            return True
-        return False
+        return (
+            result.blocked
+            or result.status >= 400
+            or is_thin(result.html)
+            or (result.tier_used in _HTTP_TIERS and is_spa_shell(result.html))
+        )
 
     async def _fetch_one(
         self,

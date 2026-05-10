@@ -1,4 +1,4 @@
-from scrapo.access.signals import detect_block, is_thin
+from scrapo.access.signals import detect_block, is_spa_shell, is_thin
 
 
 def test_cloudflare_block_detected(blocked_html):
@@ -33,3 +33,22 @@ def test_empty_body_is_block():
 def test_is_thin():
     assert is_thin("hi")
     assert not is_thin("x" * 500)
+
+
+def test_spa_shell_detected():
+    shell = (
+        "<!doctype html><html><head><title>App</title></head><body>"
+        '<div id="root"></div>'
+        + "".join(f'<script src="/static/chunk{i}.js"></script>' for i in range(6))
+        + "<!-- " + "x" * 2000 + " -->"
+        "</body></html>"
+    )
+    assert is_spa_shell(shell)
+
+
+def test_rendered_page_is_not_spa_shell(sample_html):
+    assert not is_spa_shell(sample_html)
+
+
+def test_small_page_is_not_spa_shell():
+    assert not is_spa_shell("<html><body><div id='root'></div></body></html>")

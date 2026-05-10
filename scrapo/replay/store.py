@@ -16,9 +16,9 @@ from typing import Any
 
 import aiosqlite
 
+from scrapo._db import connect
 from scrapo.config import Config
 from scrapo.types import ExtractionResult, FetchResult, RunRecord, Tier
-
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
@@ -55,7 +55,7 @@ class ReplayStore:
     async def _ensure(self) -> None:
         if self._initialized:
             return
-        async with aiosqlite.connect(self.db_path) as db:
+        async with connect(self.db_path) as db:
             await db.executescript(_SCHEMA)
             await db.commit()
         self._initialized = True
@@ -76,7 +76,7 @@ class ReplayStore:
         if fetch is not None:
             if self.config.snapshot_html and fetch.html:
                 html_path = self.snapshot_dir / f"{record.run_id}.html.gz"
-                html_path.write_bytes(gzip.compress(fetch.html.encode("utf-8")))
+                html_path.write_bytes(gzip.compress(fetch.html.encode("utf-8"), compresslevel=6))
             if fetch.screenshot_png:
                 screenshot_path = self.snapshot_dir / f"{record.run_id}.png"
                 screenshot_path.write_bytes(fetch.screenshot_png)
@@ -86,7 +86,7 @@ class ReplayStore:
         if extraction is not None:
             extraction_json = json.dumps(_serialize_extraction(extraction), default=str)
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with connect(self.db_path) as db:
             await db.execute(
                 "INSERT OR REPLACE INTO runs("
                 "run_id, url, started_at, finished_at, tier_used, proxy_region, "
@@ -117,7 +117,7 @@ class ReplayStore:
 
     async def get(self, run_id: str) -> dict[str, Any] | None:
         await self._ensure()
-        async with aiosqlite.connect(self.db_path) as db:
+        async with connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute("SELECT * FROM runs WHERE run_id=?", (run_id,))
             row = await cur.fetchone()
@@ -134,7 +134,7 @@ class ReplayStore:
 
     async def list_runs(self, url: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
         await self._ensure()
-        async with aiosqlite.connect(self.db_path) as db:
+        async with connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             if url:
                 cur = await db.execute(

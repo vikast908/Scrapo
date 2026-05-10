@@ -6,8 +6,9 @@ Default behavior is *flag* not redact, so callers can choose how to react.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Iterable, Literal
+from typing import Literal
 
 PiiKind = Literal["email", "phone", "ssn", "credit_card", "ipv4", "iban", "passport"]
 

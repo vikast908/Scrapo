@@ -8,7 +8,8 @@ can wire Browser Use, Stagehand-style logic, or their own loop.
 from __future__ import annotations
 
 import time
-from typing import Any, Awaitable, Callable, Protocol
+from collections.abc import Awaitable, Callable
+from typing import Any, Protocol
 
 from scrapo.access.signals import annotate
 from scrapo.config import Config

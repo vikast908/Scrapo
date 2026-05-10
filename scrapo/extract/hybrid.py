@@ -23,9 +23,12 @@ from scrapo.extract.llm_adapters.base import LLMAdapter, get_default
 from scrapo.extract.pinning import PinnedModel, matches, require_pin
 from scrapo.extract.schema import schema_hash, schema_to_jsonschema, schema_version
 from scrapo.extract.selector_cache import SelectorCache
-from scrapo.types import ExtractionResult, ProvenanceTag
+from scrapo.types import Budget, ExtractionResult, ProvenanceTag
 
 log = structlog.get_logger(__name__)
+
+# Drop a cached selector set after this many consecutive validation failures.
+STALE_SELECTOR_THRESHOLD = 3
 
 
 _PROMPT_TEMPLATE = """\
@@ -74,6 +77,7 @@ class HybridExtractor:
         html: str,
         markdown: str,
         model: type[BaseModel],
+        budget: Budget | None = None,
     ) -> ExtractionResult:
         require_pin(self.pin, strict=self.strict_pin)
         sh = schema_hash(model)
@@ -92,8 +96,16 @@ class HybridExtractor:
                     schema_version=sv,
                     provenance=provenance,
                 )
-            await self.cache.record_failure(url, sh)
-            log.info("scrapo.extract.cache_miss_validation", url=url, schema=sv)
+            failures = await self.cache.record_failure(url, sh)
+            if failures >= STALE_SELECTOR_THRESHOLD:
+                await self.cache.invalidate(url, sh)
+                log.info("scrapo.extract.cache_evicted", url=url, schema=sv, failures=failures)
+            else:
+                log.info("scrapo.extract.cache_miss_validation", url=url, schema=sv, failures=failures)
+
+        if budget is not None and not budget.can_use_llm(0):
+            log.info("scrapo.extract.llm_budget_exhausted", url=url, schema=sv)
+            return ExtractionResult(data=None, method="none", schema_version=sv)
 
         return await self._llm_extract(url, html, markdown, model, sh, sv)
 
@@ -141,6 +153,7 @@ class HybridExtractor:
                 model_pinned=f"{resp.provider}:{resp.model_id}",
                 prompt_hash=PROMPT_HASH,
                 llm_calls=1,
+                cost_usd=resp.cost_usd,
             )
 
         try:
@@ -154,6 +167,7 @@ class HybridExtractor:
                 model_pinned=f"{resp.provider}:{resp.model_id}",
                 prompt_hash=PROMPT_HASH,
                 llm_calls=1,
+                cost_usd=resp.cost_usd,
             )
 
         if selectors:
@@ -170,6 +184,7 @@ class HybridExtractor:
             model_pinned=f"{resp.provider}:{resp.model_id}",
             prompt_hash=PROMPT_HASH,
             llm_calls=1,
+            cost_usd=resp.cost_usd,
             provenance=provenance,
         )
 
@@ -205,7 +220,7 @@ class HybridExtractor:
         for field_name, spec in selectors.items():
             try:
                 node = tree.css_first(spec["selector"])
-            except Exception:
+            except Exception:  # noqa: S112 - a malformed LLM selector just gets skipped
                 continue
             if node is None:
                 continue
@@ -215,9 +230,7 @@ class HybridExtractor:
                 continue
             if isinstance(target, str) and target.strip() and (
                 target.strip().lower() in text.lower() or text.lower() in target.strip().lower()
-            ):
-                verified[field_name] = spec
-            elif not isinstance(target, str):
+            ) or not isinstance(target, str):
                 verified[field_name] = spec
         return verified
 

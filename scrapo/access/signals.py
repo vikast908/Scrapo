@@ -1,10 +1,16 @@
-"""Failure-signal detection — when to escalate to a more expensive tier."""
+"""Failure-signal detection: when to escalate to a more expensive tier."""
 
 from __future__ import annotations
 
 import re
 
 from scrapo.types import FetchResult
+
+_TAG_RE = re.compile(r"<[^>]+>")
+_SCRIPT_RE = re.compile(r"<script[\s>]", re.I)
+_SPA_ROOT_RE = re.compile(
+    r'id=["\'](root|app|__next|__nuxt|svelte|q-app)["\']|data-reactroot|ng-app', re.I
+)
 
 _BLOCK_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"cf-browser-verification|cf-chl-bypass|__cf_chl_", re.I), "cloudflare"),
@@ -37,6 +43,27 @@ def detect_block(html: str, status: int) -> tuple[bool, str | None]:
 def is_thin(html: str, min_chars: int = 200) -> bool:
     """Body too small to plausibly contain meaningful content."""
     return len(html.strip()) < min_chars
+
+
+def _visible_text_len(html: str) -> int:
+    no_scripts = re.sub(r"<(script|style)\b[^>]*>.*?</\1>", " ", html, flags=re.I | re.S)
+    return len(" ".join(_TAG_RE.sub(" ", no_scripts).split()))
+
+
+def is_spa_shell(html: str, *, min_html: int = 1500, max_visible: int = 220) -> bool:
+    """Heuristic: lots of markup and script, almost no rendered text yet.
+
+    Catches the classic single-page-app shell (an empty ``<div id="root">`` plus
+    a bundle of ``<script>`` tags) so the router escalates straight to a browser
+    instead of wasting an HTTP attempt and then mislabeling the result "thin".
+    """
+    if len(html) < min_html:
+        return False
+    visible = _visible_text_len(html)
+    if visible >= max_visible:
+        return False
+    scripts = len(_SCRIPT_RE.findall(html))
+    return scripts >= 3 or bool(_SPA_ROOT_RE.search(html))
 
 
 def annotate(result: FetchResult) -> FetchResult:

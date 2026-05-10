@@ -30,8 +30,11 @@ class Config:
     default_max_tier: Tier = Tier.BROWSER
     respect_robots: bool = False
     enable_pii_filter: bool = False
+    redact_snapshots: bool = False
     audit_enabled: bool = True
     snapshot_html: bool = True
+    allow_private_hosts: bool = False
+    http_retries: int = 2
     proxy_adapter: str | None = None
     llm_adapter: str | None = "anthropic"
     llm_model: str = "claude-opus-4-7"
@@ -71,6 +74,9 @@ class Config:
             max_concurrency=int(os.environ.get("SCRAPO_CONCURRENCY", "8")),
             respect_robots=os.environ.get("SCRAPO_RESPECT_ROBOTS", "0") == "1",
             enable_pii_filter=os.environ.get("SCRAPO_PII_FILTER", "0") == "1",
+            redact_snapshots=os.environ.get("SCRAPO_REDACT_SNAPSHOTS", "0") == "1",
+            allow_private_hosts=os.environ.get("SCRAPO_ALLOW_PRIVATE_HOSTS", "0") == "1",
+            http_retries=int(os.environ.get("SCRAPO_HTTP_RETRIES", "2")),
             proxy_adapter=os.environ.get("SCRAPO_PROXY_ADAPTER") or None,
             llm_adapter=os.environ.get("SCRAPO_LLM_ADAPTER", "anthropic"),
             llm_model=os.environ.get("SCRAPO_LLM_MODEL", "claude-opus-4-7"),

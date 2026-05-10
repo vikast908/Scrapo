@@ -15,8 +15,9 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-from typing import Awaitable, Callable
-from urllib.parse import urljoin, urlparse
+from collections.abc import Awaitable, Callable
+from typing import Any
+from urllib.parse import urljoin, urlparse, urlsplit
 
 import structlog
 from selectolax.parser import HTMLParser
@@ -25,19 +26,29 @@ from scrapo.config import Config
 from scrapo.crawl.dedup import UrlDeduper, normalize_url
 from scrapo.crawl.queue import RequestQueue
 from scrapo.policy.robots import RobotsGate
+from scrapo.security import is_url_allowed
 from scrapo.types import Budget
 
 log = structlog.get_logger(__name__)
 
 
-PageHandler = Callable[[dict], Awaitable[None]]
+PageHandler = Callable[[dict[str, Any]], Awaitable[None]]
+
+_SKIP_LINK_EXTENSIONS = (
+    ".pdf", ".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".ico", ".bmp",
+    ".css", ".js", ".mjs", ".json", ".xml", ".rss", ".atom",
+    ".zip", ".gz", ".tar", ".bz2", ".7z", ".rar",
+    ".mp4", ".webm", ".mov", ".avi", ".mp3", ".wav", ".ogg", ".flac",
+    ".woff", ".woff2", ".ttf", ".otf", ".eot",
+    ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+)
 
 
 class CrawlScheduler:
     def __init__(
         self,
         config: Config,
-        scrape_fn: Callable[..., Awaitable[dict]],
+        scrape_fn: Callable[..., Awaitable[dict[str, Any]]],
         robots: RobotsGate | None = None,
         crawl_id: str | None = None,
     ) -> None:
@@ -68,8 +79,9 @@ class CrawlScheduler:
         seed_hosts = {urlparse(s).netloc for s in seeds}
         sem = asyncio.Semaphore(self.config.max_concurrency)
         pages_done = 0
+        in_flight = 0
 
-        async def worker(req: dict) -> None:
+        async def worker(req: dict[str, Any]) -> None:
             nonlocal pages_done
             url = req["url"]
             depth = req["depth"]
@@ -99,22 +111,26 @@ class CrawlScheduler:
                 log.warning("scrapo.crawl.fetch_error", url=url, err=str(e))
                 await self.queue.fail(req["id"], str(e), retry=req["attempts"] < 2)
 
+        async def bound(req: dict[str, Any]) -> None:
+            nonlocal in_flight
+            try:
+                async with sem:
+                    await worker(req)
+            finally:
+                in_flight -= 1
+
         async with asyncio.TaskGroup() as tg:
             while True:
                 if budget.max_pages is not None and pages_done >= budget.max_pages:
                     break
                 req = await self.queue.claim()
                 if req is None:
-                    if not _has_in_flight(tg):
+                    if in_flight == 0:
                         break
-                    await asyncio.sleep(0.1)
+                    await asyncio.sleep(0.05)
                     continue
-
-                async def _bound(req=req):
-                    async with sem:
-                        await worker(req)
-
-                tg.create_task(_bound())
+                in_flight += 1
+                tg.create_task(bound(req))
 
         return await self.queue.stats()
 
@@ -127,20 +143,21 @@ class CrawlScheduler:
                 await asyncio.sleep(next_ok - now)
             self._host_next_ok[host] = max(now, next_ok) + delay
 
-    @staticmethod
-    def _extract_links(base_url: str, html: str) -> list[str]:
+    def _extract_links(self, base_url: str, html: str) -> list[str]:
         if not html:
             return []
         tree = HTMLParser(html)
         out: list[str] = []
         for a in tree.css("a[href]"):
             href = (a.attributes.get("href") or "").strip() if a.attributes else ""
-            if not href or href.startswith(("javascript:", "mailto:", "tel:", "#")):
+            if not href or href.startswith(("javascript:", "mailto:", "tel:", "#", "data:")):
                 continue
             absu = urljoin(base_url, href)
+            if not absu.startswith(("http://", "https://")):
+                continue
+            if urlsplit(absu).path.lower().endswith(_SKIP_LINK_EXTENSIONS):
+                continue
+            if not is_url_allowed(absu, allow_private=self.config.allow_private_hosts):
+                continue
             out.append(normalize_url(absu))
         return out
-
-
-def _has_in_flight(tg: asyncio.TaskGroup) -> bool:
-    return any(not t.done() for t in getattr(tg, "_tasks", set()))

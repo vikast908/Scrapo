@@ -14,14 +14,17 @@ from rich.table import Table
 
 from scrapo.api import crawl as crawl_api
 from scrapo.api import scrape as scrape_api
-from scrapo.config import Config, get_config, set_config
+from scrapo.config import Config, set_config
+from scrapo.logging import configure_logging
 from scrapo.replay.diff import diff_runs, diff_summary
 from scrapo.replay.store import ReplayStore
 from scrapo.shape.provenance import shape_document
 from scrapo.types import Budget, Tier
 
-app = typer.Typer(no_args_is_help=True, help="Scrapo — AI-native, agent-first scraping")
+app = typer.Typer(no_args_is_help=True, help="Scrapo: AI-native, agent-first scraping")
 console = Console()
+
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 
 def _load_config(data_dir: Path | None) -> Config:
@@ -179,7 +182,10 @@ def adapters() -> None:
     from scrapo.access.adapters.scrapfly import register_default as sf
     from scrapo.access.adapters.zyte import register_default as zy
 
-    bd(); ox(); sf(); zy()
+    bd()
+    ox()
+    sf()
+    zy()
     for name in registry.list_names():
         console.print(f"- {name}")
 
@@ -195,6 +201,13 @@ def serve(
     cfg = _load_config(data_dir)
     from scrapo.web import serve as serve_ui
 
+    if host not in _LOOPBACK_HOSTS:
+        console.print(
+            f"[yellow]warning:[/yellow] binding the UI to {host} exposes an open scrape "
+            "endpoint on your network. Anyone who can reach it can make this host fetch "
+            "arbitrary URLs. Use 127.0.0.1 unless you know what you're doing."
+        )
+
     serve_ui(
         cfg,
         host=host,
@@ -205,6 +218,7 @@ def serve(
 
 
 def main() -> None:
+    configure_logging()
     try:
         app()
     except KeyboardInterrupt:

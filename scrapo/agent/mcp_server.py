@@ -93,14 +93,14 @@ async def serve_stdio() -> None:
 
     server: Server = Server("scrapo")
 
-    @server.list_tools()
+    @server.list_tools()  # type: ignore[untyped-decorator]
     async def _list_tools() -> list[Tool]:
         return [
             Tool(name=t["name"], description=t["description"], inputSchema=t["input_schema"])
             for t in TOOL_SCHEMAS
         ]
 
-    @server.call_tool()
+    @server.call_tool()  # type: ignore[untyped-decorator]
     async def _call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         handler = _HANDLERS.get(name)
         if handler is None:
@@ -115,6 +115,9 @@ async def serve_stdio() -> None:
 def main() -> None:
     import asyncio
 
+    from scrapo.logging import configure_logging
+
+    configure_logging()
     asyncio.run(serve_stdio())
 
 

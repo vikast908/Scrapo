@@ -130,6 +130,7 @@ class ExtractionResult:
     prompt_hash: str | None = None
     schema_version: str | None = None
     llm_calls: int = 0
+    cost_usd: float = 0.0
     provenance: list[ProvenanceTag] = field(default_factory=list)
 
 

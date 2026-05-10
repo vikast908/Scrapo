@@ -1,16 +1,23 @@
-"""T0 / T1 — pure HTTP fetching with optional sessioned headers."""
+"""T0 / T1 - pure HTTP fetching with optional sessioned headers."""
 
 from __future__ import annotations
 
+import asyncio
+import random
 import time
 from typing import Any
 
 import httpx
+import structlog
 
 from scrapo.access.adapters.base import ProxyAdapter
 from scrapo.access.signals import annotate
 from scrapo.config import Config
 from scrapo.types import FetchResult, Tier
+
+log = structlog.get_logger(__name__)
+
+_RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 
 _DEFAULT_HEADERS_T1 = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -27,7 +34,7 @@ _DEFAULT_HEADERS_T1 = {
 
 
 class HttpTier:
-    """Tier 0/1 fetcher — fast static-page path."""
+    """Tier 0/1 fetcher - fast static-page path with bounded retries."""
 
     def __init__(self, config: Config, proxy_adapter: ProxyAdapter | None = None) -> None:
         self.config = config
@@ -72,33 +79,52 @@ class HttpTier:
         if cookies:
             client_kwargs["cookies"] = cookies
 
-        start = time.perf_counter()
+        attempts = max(1, self.config.http_retries + 1)
+        last: FetchResult | None = None
         async with httpx.AsyncClient(**client_kwargs) as client:
-            try:
-                resp = await client.get(url)
-                elapsed_ms = (time.perf_counter() - start) * 1000.0
-                result = FetchResult(
-                    url=url,
-                    final_url=str(resp.url),
-                    status=resp.status_code,
-                    html=resp.text,
-                    headers=dict(resp.headers),
-                    tier_used=tier,
-                    elapsed_ms=elapsed_ms,
-                    proxy_region=proxy_region,
-                )
-                return annotate(result)
-            except httpx.HTTPError as e:
-                elapsed_ms = (time.perf_counter() - start) * 1000.0
-                return FetchResult(
-                    url=url,
-                    final_url=url,
-                    status=0,
-                    html="",
-                    headers={},
-                    tier_used=tier,
-                    elapsed_ms=elapsed_ms,
-                    proxy_region=proxy_region,
-                    blocked=True,
-                    block_reason=f"network:{type(e).__name__}",
-                )
+            for attempt in range(attempts):
+                start = time.perf_counter()
+                try:
+                    resp = await client.get(url)
+                    elapsed_ms = (time.perf_counter() - start) * 1000.0
+                    last = annotate(
+                        FetchResult(
+                            url=url,
+                            final_url=str(resp.url),
+                            status=resp.status_code,
+                            html=resp.text,
+                            headers=dict(resp.headers),
+                            tier_used=tier,
+                            elapsed_ms=elapsed_ms,
+                            proxy_region=proxy_region,
+                        )
+                    )
+                    if resp.status_code not in _RETRYABLE_STATUS:
+                        return last
+                except httpx.HTTPError as e:
+                    elapsed_ms = (time.perf_counter() - start) * 1000.0
+                    last = FetchResult(
+                        url=url,
+                        final_url=url,
+                        status=0,
+                        html="",
+                        headers={},
+                        tier_used=tier,
+                        elapsed_ms=elapsed_ms,
+                        proxy_region=proxy_region,
+                        blocked=True,
+                        block_reason=f"network:{type(e).__name__}",
+                    )
+                if attempt < attempts - 1:
+                    backoff = min(8.0, 0.5 * (2**attempt)) + random.uniform(0, 0.4)  # noqa: S311
+                    log.debug(
+                        "scrapo.http.retry",
+                        url=url,
+                        attempt=attempt + 1,
+                        status=last.status if last else None,
+                        sleep=round(backoff, 2),
+                    )
+                    await asyncio.sleep(backoff)
+
+        assert last is not None
+        return last

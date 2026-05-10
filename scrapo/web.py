@@ -5,9 +5,10 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+from collections.abc import Callable
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Callable
+from typing import Any
 from urllib.parse import urlparse
 
 import structlog
@@ -81,12 +82,24 @@ def describe_block_reason(reason: Any) -> str | None:
 
 
 def make_handler(
-    config: Config, default_max_tier: Tier, scrape_lock: threading.Lock
+    config: Config,
+    default_max_tier: Tier,
+    scrape_lock: threading.Lock,
+    allowed_hosts: frozenset[str],
 ) -> type[BaseHTTPRequestHandler]:
     class ScrapoViewHandler(BaseHTTPRequestHandler):
         server_version = "ScrapoView/0.1"
 
+        def _host_ok(self) -> bool:
+            if not allowed_hosts:  # not loopback-bound; Host check disabled
+                return True
+            sent = (self.headers.get("Host", "") or "").rsplit(":", 1)[0].strip("[]").lower()
+            return sent in allowed_hosts
+
         def do_GET(self) -> None:
+            if not self._host_ok():
+                self._send_json(HTTPStatus.FORBIDDEN, {"error": "Host header not allowed"})
+                return
             if self.path in {"/", "/index.html"}:
                 self._send(HTTPStatus.OK, INDEX_HTML, "text/html; charset=utf-8")
                 return
@@ -99,6 +112,9 @@ def make_handler(
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
 
         def do_POST(self) -> None:
+            if not self._host_ok():
+                self._send_json(HTTPStatus.FORBIDDEN, {"error": "Host header not allowed"})
+                return
             if self.path != "/api/scrape":
                 self._send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
                 return
@@ -118,7 +134,7 @@ def make_handler(
                 log.exception("scrapo.web.scrape_failed", url=url)
                 self._send_json(
                     HTTPStatus.INTERNAL_SERVER_ERROR,
-                    {"error": "Scrape failed — see server logs for details."},
+                    {"error": "Scrape failed; see server logs for details."},
                 )
                 return
 
@@ -132,7 +148,10 @@ def make_handler(
             if length <= 0:
                 return {}
             raw = self.rfile.read(length)
-            return json.loads(raw.decode("utf-8"))
+            parsed = json.loads(raw.decode("utf-8"))
+            if not isinstance(parsed, dict):
+                raise ValueError("request body must be a JSON object")
+            return parsed
 
         def _send_json(self, status: HTTPStatus, payload: dict[str, Any]) -> None:
             body = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
@@ -163,7 +182,13 @@ def serve(
     # Handlers run one-per-thread; serialize scrapes so concurrent requests
     # don't trip over each other writing the same SQLite stores.
     scrape_lock = threading.Lock()
-    handler = make_handler(config, max_tier, scrape_lock)
+    _loopback = {"127.0.0.1", "localhost", "::1"}
+    # Only enforce the Host-header allowlist on loopback binds (anti DNS-rebinding);
+    # if the operator deliberately binds a public interface, leave it to them.
+    allowed_hosts = (
+        frozenset(_loopback | {host.lower().strip("[]")}) if host.lower().strip("[]") in _loopback else frozenset()
+    )
+    handler = make_handler(config, max_tier, scrape_lock, allowed_hosts)
     server = ThreadingHTTPServer((host, port), handler)
     if on_ready is not None:
         on_ready(f"http://{host}:{port}/")

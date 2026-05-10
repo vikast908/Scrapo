@@ -41,7 +41,7 @@ def list_names() -> list[str]:
     return sorted(_registry.keys())
 
 
-class registry:
+class registry:  # noqa: N801 - public namespace object, kept lowercase for back-compat
     """Namespace for adapter registry helpers."""
 
     register = staticmethod(register)

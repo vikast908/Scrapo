@@ -13,7 +13,6 @@ from typing import Any
 
 from scrapo.extract.llm_adapters.base import LLMResponse
 
-
 _PRICING_USD_PER_MTOK: dict[str, tuple[float, float]] = {
     "claude-opus-4-7": (15.0, 75.0),
     "claude-sonnet-4-6": (3.0, 15.0),
