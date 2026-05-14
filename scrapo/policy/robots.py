@@ -69,9 +69,15 @@ class RobotsGate:
                 self._cache[origin] = _empty()
                 return self._cache[origin]
             rp = robotparser.RobotFileParser()
-            if resp.status_code == 200:
+            if resp.status_code == 200 and _looks_like_robots(resp):
                 rp.parse(resp.text.splitlines())
             else:
+                if resp.status_code == 200:
+                    log.info(
+                        "scrapo.robots.non_text_response",
+                        origin=origin,
+                        content_type=resp.headers.get("content-type"),
+                    )
                 rp.parse([])
             self._cache[origin] = rp
             return rp
@@ -86,3 +92,14 @@ def _empty() -> robotparser.RobotFileParser:
     rp = robotparser.RobotFileParser()
     rp.parse([])
     return rp
+
+
+def _looks_like_robots(resp: httpx.Response) -> bool:
+    """Skip parsing payloads that aren't really robots.txt — HTML login walls
+    served at /robots.txt would otherwise be silently treated as an allow-all
+    file, which is the wrong failure mode for a compliance gate."""
+    ctype = (resp.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
+    if ctype and not (ctype.startswith("text/plain") or ctype == "text/robots"):
+        return False
+    head = resp.text[:512].lstrip().lower()
+    return not head.startswith(("<!doctype", "<html", "<head", "<?xml"))

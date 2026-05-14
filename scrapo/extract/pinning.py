@@ -43,8 +43,11 @@ def require_pin(pin: PinnedModel | None, *, strict: bool) -> None:
 def matches(pin: PinnedModel | None, provider: str, model_id: str, prompt_hash: str) -> bool:
     if pin is None:
         return True
+    # Provider and model_id are compared case-insensitively so a pin built from
+    # an env-var or a constructor with mixed case still matches; the prompt hash
+    # is content-derived and must match exactly.
     return (
-        pin.provider == provider
-        and pin.model_id == model_id
+        pin.provider.casefold() == (provider or "").casefold()
+        and pin.model_id.casefold() == (model_id or "").casefold()
         and pin.prompt_template_hash == prompt_hash
     )

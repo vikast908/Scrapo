@@ -54,3 +54,22 @@ def test_shape_document_has_provenance(sample_html):
         assert c.provenance.url == "https://example.com"
         assert c.provenance.selector_path.startswith("markdown://")
         assert c.provenance.chunk_hash
+
+
+def test_chunk_byte_offsets_are_utf8_bytes_with_non_ascii():
+    # Force the long-section paragraph-split branch (>target_chars) so the
+    # paragraph offset arithmetic runs end-to-end. Each filler para is short on
+    # its own; together they overflow.
+    para = "Café résumé 🤖 emoji line. " * 8
+    md = "# Heading\n\n" + ("\n\n".join([para] * 20))
+    chunks = chunk_markdown(md, target_chars=400)
+    md_bytes = md.encode("utf-8")
+    assert len(chunks) > 1
+    for c in chunks:
+        # Offsets must index into the UTF-8 byte stream, not the char stream.
+        assert 0 <= c.byte_start <= c.byte_end <= len(md_bytes), (
+            c.byte_start, c.byte_end, len(md_bytes)
+        )
+        # And the chunk text should actually be present in the original markdown.
+        if c.text:
+            assert c.text[:30].strip().split("\n", 1)[0] in md

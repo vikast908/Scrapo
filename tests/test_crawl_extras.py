@@ -1,3 +1,5 @@
+import gzip
+
 import httpx
 import pytest
 import respx
@@ -49,6 +51,18 @@ async def test_sitemap_index_is_followed():
 async def test_missing_sitemap_returns_empty():
     respx.get("https://e.com/sitemap.xml").mock(return_value=httpx.Response(404))
     assert await discover_sitemap_urls("https://e.com", user_agent="t") == []
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_sitemap_index_follows_gzipped_child():
+    idx = f'<?xml version="1.0"?><sitemapindex {_NS}><sitemap><loc>https://e.com/sm1.xml.gz</loc></sitemap></sitemapindex>'
+    sm1 = f'<?xml version="1.0"?><urlset {_NS}><url><loc>https://e.com/gz-page</loc></url></urlset>'
+    respx.get("https://e.com/sitemap.xml").mock(return_value=httpx.Response(200, text=idx))
+    respx.get("https://e.com/sm1.xml.gz").mock(
+        return_value=httpx.Response(200, content=gzip.compress(sm1.encode("utf-8")))
+    )
+    assert await discover_sitemap_urls("https://e.com", user_agent="t") == ["https://e.com/gz-page"]
 
 
 _PAGE = "<!doctype html><html><head><title>P</title></head><body><main><h1>Hi</h1><p>" + ("ok " * 200) + "</p></main></body></html>"

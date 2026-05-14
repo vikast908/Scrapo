@@ -43,9 +43,14 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "seeds": {"type": "array", "items": {"type": "string"}},
-                "max_depth": {"type": "integer", "default": 2},
-                "max_pages": {"type": "integer", "default": 100},
+                "seeds": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 1,
+                    "maxItems": 20,
+                },
+                "max_depth": {"type": "integer", "minimum": 0, "maximum": 5, "default": 2},
+                "max_pages": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 100},
                 "same_host_only": {"type": "boolean", "default": True},
             },
             "required": ["seeds"],

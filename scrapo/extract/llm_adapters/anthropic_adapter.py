@@ -103,6 +103,10 @@ def _strip_fences(text: str) -> str:
         text = parts[1] if len(parts) >= 2 else ""
         if text.startswith("json"):
             text = text[4:]
+    # Strip a trailing fence even when the model leaves whitespace before it:
+    # without rstrip(), `endswith("```")` is False on `"...\n```"` and the fence
+    # leaks into json.loads.
+    text = text.rstrip()
     if text.endswith("```"):
         text = text[: text.rfind("```")]
     return text.strip()

@@ -154,12 +154,16 @@ class CrawlScheduler:
 
     async def _respect_host_delay(self, host: str, url: str) -> None:
         delay = await self.robots.crawl_delay(url) or 0.0
+        # Reserve the slot under the lock, then sleep *outside* it so workers
+        # for other hosts aren't blocked behind one host's crawl-delay.
         async with self._host_lock:
             now = time.monotonic()
             next_ok = self._host_next_ok.get(host, 0.0)
-            if now < next_ok:
-                await asyncio.sleep(next_ok - now)
-            self._host_next_ok[host] = max(now, next_ok) + delay
+            my_slot = max(now, next_ok)
+            self._host_next_ok[host] = my_slot + delay
+        wait = my_slot - time.monotonic()
+        if wait > 0:
+            await asyncio.sleep(wait)
 
     def _extract_links(self, base_url: str, html: str) -> list[str]:
         if not html:

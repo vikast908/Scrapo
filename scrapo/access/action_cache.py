@@ -15,6 +15,7 @@ replayed *action* fails to execute, not when the goal turns out unmet.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from pathlib import Path
@@ -56,14 +57,18 @@ class ActionCache:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
         self._initialized = False
+        self._init_lock = asyncio.Lock()
 
     async def _ensure(self) -> None:
         if self._initialized:
             return
-        async with connect(self.db_path) as db:
-            await db.executescript(_SCHEMA)
-            await db.commit()
-        self._initialized = True
+        async with self._init_lock:
+            if self._initialized:
+                return
+            async with connect(self.db_path) as db:
+                await db.executescript(_SCHEMA)
+                await db.commit()
+            self._initialized = True
 
     async def get(self, url: str, goal: str) -> list[dict[str, Any]]:
         await self._ensure()

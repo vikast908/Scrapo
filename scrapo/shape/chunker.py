@@ -92,25 +92,59 @@ def _split_by_heading(md: str) -> list[tuple[str, list[str], int]]:
 def _split_paragraphs(
     text: str, target_chars: int, overlap_chars: int
 ) -> list[tuple[str, int, int]]:
-    paragraphs = text.split("\n\n")
-    out: list[tuple[str, int, int]] = []
-    buf: list[str] = []
-    buf_len = 0
+    """Return ``(piece, byte_start, byte_end)`` triples whose offsets index into
+    ``text.encode("utf-8")``. The caller adds these to the section's own UTF-8
+    byte_start, so any mismatch silently corrupts every provenance range that
+    contains a non-ASCII character.
+
+    Each emitted chunk's byte range maps to the actual paragraphs that produced
+    it; the optional ``overlap_chars`` tail is prepended to the *next* chunk's
+    text purely as LLM context — it doesn't extend the byte range backwards (a
+    mid-paragraph tail would need a sub-paragraph byte index we don't track).
+    """
+    sep = "\n\n"
+    sep_bytes = len(sep.encode("utf-8"))
+    paragraphs = text.split(sep)
+
+    # Pre-compute byte offsets of each paragraph within ``text``.
+    para_byte_start: list[int] = []
+    para_byte_len: list[int] = []
     cursor = 0
-    chunk_start = 0
-    for para in paragraphs:
-        para_with_sep = para + "\n\n"
-        if buf_len + len(para_with_sep) > target_chars and buf:
-            joined = "".join(buf)
-            out.append((joined, chunk_start, chunk_start + len(joined)))
-            tail = joined[-overlap_chars:] if overlap_chars else ""
-            chunk_start = chunk_start + len(joined) - len(tail)
-            buf = [tail] if tail else []
-            buf_len = len(tail)
-        buf.append(para_with_sep)
-        buf_len += len(para_with_sep)
-        cursor += len(para_with_sep)
-    if buf:
-        joined = "".join(buf)
-        out.append((joined, chunk_start, chunk_start + len(joined)))
+    for i, para in enumerate(paragraphs):
+        para_byte_start.append(cursor)
+        n = len(para.encode("utf-8"))
+        para_byte_len.append(n)
+        cursor += n
+        if i < len(paragraphs) - 1:
+            cursor += sep_bytes
+
+    out: list[tuple[str, int, int]] = []
+    buf_paras: list[str] = []
+    buf_first_idx = 0
+    buf_chars = 0
+    pending_tail = ""
+
+    def flush() -> None:
+        nonlocal pending_tail
+        if not buf_paras:
+            return
+        last_idx = buf_first_idx + len(buf_paras) - 1
+        start_b = para_byte_start[buf_first_idx]
+        end_b = para_byte_start[last_idx] + para_byte_len[last_idx]
+        body = sep.join(buf_paras)
+        piece = pending_tail + body if pending_tail else body
+        out.append((piece, start_b, end_b))
+        pending_tail = body[-overlap_chars:] if overlap_chars else ""
+
+    for i, para in enumerate(paragraphs):
+        cost = len(para) + len(sep)  # char budget; bytes tracked separately
+        if buf_chars + cost > target_chars and buf_paras:
+            flush()
+            buf_paras = []
+            buf_chars = 0
+        if not buf_paras:
+            buf_first_idx = i
+        buf_paras.append(para)
+        buf_chars += cost
+    flush()
     return out

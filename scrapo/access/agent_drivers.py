@@ -23,9 +23,21 @@ from typing import Any
 import structlog
 
 from scrapo.access.action_cache import ActionCache
+from scrapo.config import get_config
 from scrapo.extract.llm_adapters.base import LLMAdapter, LLMResponse, get_default
+from scrapo.security import SsrfError, check_url
 
 log = structlog.get_logger(__name__)
+
+
+def _safe_goto_target(url: str) -> bool:
+    if not (isinstance(url, str) and url.startswith(("http://", "https://"))):
+        return False
+    try:
+        check_url(url, allow_private=get_config().allow_private_hosts)
+    except SsrfError:
+        return False
+    return True
 
 _ACTIONS = ("click", "type", "scroll", "goto", "done")
 _REPLAYABLE = ("click", "type", "scroll", "goto")
@@ -185,6 +197,7 @@ def _strip_fences(text: str) -> str:
         text = parts[1] if len(parts) >= 2 else ""
         if text.startswith("json"):
             text = text[4:]
+    text = text.rstrip()
     if text.endswith("```"):
         text = text[: text.rfind("```")]
     return text.strip()
@@ -217,7 +230,7 @@ def _record_step(action: dict[str, Any], elements: list[dict[str, Any]]) -> dict
         return {"action": "scroll"}
     if act == "goto":
         url = action.get("text")
-        if isinstance(url, str) and url.startswith(("http://", "https://")):
+        if isinstance(url, str) and _safe_goto_target(url):
             return {"action": "goto", "text": url}
         return None
     idx = action.get("target")
@@ -243,9 +256,13 @@ async def _execute(page: Any, action: dict[str, Any], elements: list[dict[str, A
         return
     if act == "goto":
         url = action.get("text")
-        if isinstance(url, str) and url.startswith(("http://", "https://")):
+        # LLM-chosen URLs go through the SSRF guard — a prompt-injected page must
+        # not be able to pivot to internal services or cloud metadata endpoints.
+        if isinstance(url, str) and _safe_goto_target(url):
             with contextlib.suppress(Exception):
                 await page.goto(url, wait_until="domcontentloaded")
+        elif isinstance(url, str):
+            log.info("scrapo.agent.goto_blocked", url=url)
         return
     idx = action.get("target")
     if not isinstance(idx, int) or idx < 0 or idx >= len(elements):
@@ -271,7 +288,7 @@ async def _replay(page: Any, actions: list[dict[str, Any]]) -> bool:
                 continue
             if act == "goto":
                 url = action.get("text")
-                if not (isinstance(url, str) and url.startswith(("http://", "https://"))):
+                if not (isinstance(url, str) and _safe_goto_target(url)):
                     return False
                 await page.goto(url, wait_until="domcontentloaded")
                 continue

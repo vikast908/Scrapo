@@ -26,6 +26,11 @@ class _Mappingish(BaseModel):
         return getattr(self, key, default)
 
     def __contains__(self, key: str) -> bool:
+        # "in" reports *meaningful* membership: the field is defined and has a
+        # non-None value. The 0.1 dict shape was sparse — fields the pipeline
+        # didn't populate were absent — so callers used ``"markdown" not in result``
+        # to detect "we didn't produce one". Returning True for ``key`` whose
+        # value is None would silently flip that check.
         return getattr(self, key, None) is not None
 
 

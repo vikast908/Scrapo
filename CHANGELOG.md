@@ -7,6 +7,92 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Hardening pass: a broad robustness review fixed real edge cases across the
+SSRF guard, replay store, snapshot atomicity, content shaping, concurrency
+control, and the agent driver. No breaking changes to the public API.
+
+### Added
+
+- **SSRF guard now blocks obfuscated IP encodings**: decimal (`2130706433`),
+  hex (`0x7f000001`), short-form (`127.1`), and dotted octal/hex parts
+  (`0177.0.0.1`, `0x7f.0.0.1`) are parsed via `inet_aton`-style semantics and
+  rejected when they resolve to a loopback/private/reserved range. Public
+  numerics (e.g. decimal `8.8.8.8`) still pass.
+- **Tier-4 agent driver runs LLM-chosen `goto` URLs through the SSRF guard.**
+  A prompt-injected page can no longer talk the agent into pivoting to internal
+  services or cloud metadata endpoints; recorded action scripts skip a
+  blocked-URL step and fall back to the LLM rather than replaying it.
+- **MCP `scrapo_crawl` enforces hard caps** on `seeds` (max 20), `max_depth`
+  (≤ 5), and `max_pages` (≤ 1000) so an LLM-driven client cannot ask the server
+  to launch an unbounded crawl. Non-list seeds / non-string entries are rejected
+  with a clear error instead of crashing the handler.
+
+### Changed
+
+- **Config env-var parsing now raises a named `ValueError`** when a numeric
+  variable can't be parsed (e.g. `SCRAPO_CONCURRENCY=abc`), and rejects
+  out-of-range values (negative retries, zero concurrency, zero timeout). A
+  data-dir that can't be created surfaces as a `RuntimeError` naming the path
+  instead of a bare `PermissionError` traceback.
+- **`crawl_stream` queue is now bounded** (`maxsize = max_concurrency * 2`), so
+  a slow consumer back-pressures the scheduler instead of letting completed
+  pages accumulate in memory. The router teardown error path is logged so it
+  can't mask the original consumer exception.
+- **`diff_runs` now compares HTML through the `SnapshotStore`**, not raw
+  filesystem reads. The `same_html` diagnostic was always `False` on S3-backed
+  stores (because `Path("s3://...")` never exists); it now works for any
+  backend. Two runs that point at the same archive (304 reuse) short-circuit to
+  `True`.
+- **`LocalSnapshotStore.put` writes atomically** (write to tempfile + rename),
+  so a crash mid-write can't leave a partial snapshot recorded in SQLite as
+  complete. `ReplayStore.load_html` catches `gzip.BadGzipFile` / `OSError` and
+  returns `None` so a corrupt archive falls back to a fresh fetch on the next
+  conditional GET.
+- **`_ensure()` on every SQLite store is guarded by an `asyncio.Lock`** so
+  concurrent first callers can't both run `executescript` + the migration loop.
+- **Crawl scheduler no longer holds the host-delay lock during `asyncio.sleep`**:
+  it reserves the slot inside the lock and sleeps outside it, so a 2s
+  crawl-delay on one host doesn't block workers hitting other hosts.
+- **Sitemap discovery handles gzipped child sitemaps** referenced from a
+  sitemap-index (`sitemap.xml.gz` is decompressed before XML parsing). Common
+  on large sites.
+- **Heading-aware chunker fixes UTF-8 byte offsets** when content includes
+  non-ASCII characters. Paragraph byte ranges were accumulated as char counts,
+  which made `byte_start`/`byte_end` drift by every Unicode multi-byte
+  character. Provenance ranges now correctly slice the original byte stream.
+- **`GeoPolicy` normalises `allowed` and `denied` to lowercase** in
+  `__post_init__`. A caller passing `frozenset({"RU", "CN"})` as denied
+  countries is no longer silently ignored at check time.
+- **`PinnedModel.matches` compares provider/model_id case-insensitively** so a
+  pin built from an env-var or mixed-case constructor still matches.
+- **Browser tier hardening**: a port-less proxy URL no longer emits the literal
+  string `host:None` to Playwright; `page.goto` failures (timeout, navigation
+  errors) are now caught and surfaced as a `blocked` `FetchResult` with the
+  proxy-health feedback loop still firing.
+- **Code-fence stripping** (extractor, Anthropic adapter, agent driver) now
+  matches a closing fence even when the model leaves trailing whitespace
+  before it (` "...\n  ```" ` was falling through to the JSON parser).
+- **Robots gate refuses to parse HTML / non-text payloads** served at
+  `/robots.txt` (login walls, "access denied" pages, etc.) — those used to
+  produce an effectively allow-all parse, which is the wrong failure mode for
+  a compliance gate.
+- **Audit log writes use `os.write(O_APPEND)`** so concurrent writers (multiple
+  processes sharing one log path, e.g. MCP workers) can't interleave JSON
+  lines. POSIX guarantees atomicity for short appends under `PIPE_BUF`.
+- **`Watch.refresh` / `Watch.check` are serialised by an `asyncio.Lock`** so
+  two concurrent calls can't both read the same `last_run_id` and race to
+  overwrite it.
+
+### Fixed
+
+- Concurrent first calls to `ReplayStore` / `SelectorCache` / `ActionCache` /
+  `RequestQueue` could each run schema init in parallel.
+- `crawl_stream` could buffer an entire crawl's results in memory.
+- `_same_html` always reported "HTML changed" for S3-backed stores.
+- Decimal/octal/hex IP literal SSRF bypasses.
+- Chunker byte ranges drifted on any page with non-ASCII content.
+- `GeoPolicy(denied=frozenset({"RU"}))` silently allowed `region="RU"`.
+
 ## [0.7.0] - 2026-05-11
 
 Feature release: conditional requests, change tracking (`watch()`), and a

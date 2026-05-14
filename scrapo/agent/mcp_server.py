@@ -35,15 +35,37 @@ async def _scrapo_scrape(args: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+_MCP_MAX_SEEDS = 20
+_MCP_MAX_DEPTH = 5
+_MCP_MAX_PAGES = 1000
+
+
 async def _scrapo_crawl(args: dict[str, Any]) -> dict[str, Any]:
-    budget = Budget(max_tier=Tier.BROWSER, max_pages=int(args.get("max_pages", 100)))
+    seeds = args.get("seeds")
+    if not isinstance(seeds, list) or not seeds:
+        return {"error": "seeds must be a non-empty list of URLs"}
+    if len(seeds) > _MCP_MAX_SEEDS:
+        return {"error": f"too many seeds: {len(seeds)} > {_MCP_MAX_SEEDS}"}
+    if not all(isinstance(s, str) for s in seeds):
+        return {"error": "every seed must be a string URL"}
+    max_pages = _clamp_int(args.get("max_pages", 100), low=1, high=_MCP_MAX_PAGES)
+    max_depth = _clamp_int(args.get("max_depth", 2), low=0, high=_MCP_MAX_DEPTH)
+    budget = Budget(max_tier=Tier.BROWSER, max_pages=max_pages)
     result = await crawl(
-        args["seeds"],
+        seeds,
         budget=budget,
-        max_depth=int(args.get("max_depth", 2)),
+        max_depth=max_depth,
         same_host_only=bool(args.get("same_host_only", True)),
     )
     return result.model_dump(mode="json")
+
+
+def _clamp_int(value: Any, *, low: int, high: int) -> int:
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return low
+    return max(low, min(high, n))
 
 
 async def _scrapo_replay(args: dict[str, Any]) -> dict[str, Any]:

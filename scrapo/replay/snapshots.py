@@ -9,7 +9,10 @@ gets persisted in the ``runs`` table and handed back to load it.
 
 from __future__ import annotations
 
+import contextlib
 import gzip
+import os
+import uuid
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -27,7 +30,18 @@ class LocalSnapshotStore:
     def put(self, key: str, data: bytes) -> str:
         path = self.root / key
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(data)
+        # Atomic write: a crash mid-stream must not leave a half-written snapshot
+        # with the SQLite row already pointing at it. Write to a sibling tempfile
+        # and rename — rename on the same filesystem is atomic on POSIX and on
+        # Windows (since Python 3.3, Path.replace uses MoveFileEx).
+        tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex[:8]}.tmp")
+        try:
+            tmp.write_bytes(data)
+            os.replace(tmp, path)
+        except OSError:
+            with contextlib.suppress(OSError):
+                tmp.unlink()
+            raise
         return str(path)
 
     def get(self, locator: str) -> bytes | None:

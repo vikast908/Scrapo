@@ -6,6 +6,7 @@ fewer URLs. Follows one layer of ``<sitemapindex>``.
 
 from __future__ import annotations
 
+import gzip
 from urllib.parse import urljoin
 from xml.etree import ElementTree as ET
 
@@ -47,8 +48,11 @@ async def discover_sitemap_urls(
                 continue
             if resp.status_code != 200:
                 continue
+            payload = _decode_sitemap(sm_url, resp)
+            if payload is None:
+                continue
             try:
-                root = ET.fromstring(resp.text)  # noqa: S314 - sitemap from a host we chose to crawl
+                root = ET.fromstring(payload)  # noqa: S314 - sitemap from a host we chose to crawl
             except ET.ParseError:
                 continue
             is_index = _local(root.tag) == "sitemapindex"
@@ -65,3 +69,18 @@ async def discover_sitemap_urls(
                     if len(found) >= max_urls:
                         break
     return found
+
+
+def _decode_sitemap(url: str, resp: httpx.Response) -> bytes | None:
+    """Decompress ``sitemap.xml.gz`` style payloads. httpx already handles a
+    ``Content-Encoding: gzip`` *transport* layer; this catches files whose actual
+    body is a gzip stream (common on large sites referenced from a sitemap index)."""
+    body = resp.content
+    looks_gz = url.lower().endswith(".gz") or body[:2] == b"\x1f\x8b"
+    if not looks_gz:
+        return body
+    try:
+        return gzip.decompress(body)
+    except (OSError, gzip.BadGzipFile):
+        log.debug("scrapo.sitemap.bad_gzip", url=url)
+        return None

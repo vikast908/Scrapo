@@ -326,6 +326,8 @@ def _parse_data_and_selectors(text: str) -> tuple[dict[str, Any] | None, dict[st
         cleaned = parts_fence[1] if len(parts_fence) >= 2 else ""
         if cleaned.startswith("json"):
             cleaned = cleaned[4:]
+        # Match the closing fence even when the model leaves trailing whitespace.
+        cleaned = cleaned.rstrip()
         if cleaned.endswith("```"):
             cleaned = cleaned[: cleaned.rfind("```")]
     parts = cleaned.split("SELECTORS:", 1)

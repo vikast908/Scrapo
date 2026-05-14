@@ -1,3 +1,5 @@
+import pytest
+
 from scrapo.config import Config
 
 
@@ -68,3 +70,37 @@ def test_proxy_pool_defaults_and_env(monkeypatch, tmp_path):
     cfg = Config.from_env()
     assert cfg.proxy_urls == ["http://a:1", "http://b:2"]
     assert cfg.proxy_cooldown_seconds == 45.0
+
+
+def test_bad_int_env_var_raises_with_name(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCRAPO_DATA_DIR", str(tmp_path / "scrapo"))
+    monkeypatch.setenv("SCRAPO_CONCURRENCY", "abc")
+    with pytest.raises(ValueError, match="SCRAPO_CONCURRENCY"):
+        Config.from_env()
+
+
+def test_bad_float_env_var_raises_with_name(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCRAPO_DATA_DIR", str(tmp_path / "scrapo"))
+    monkeypatch.setenv("SCRAPO_TIMEOUT", "fast")
+    with pytest.raises(ValueError, match="SCRAPO_TIMEOUT"):
+        Config.from_env()
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"max_concurrency": 0},
+        {"http_retries": -1},
+        {"proxy_cooldown_seconds": -5},
+        {"request_timeout": 0},
+    ],
+)
+def test_config_rejects_invalid_numerics(kwargs, tmp_path):
+    with pytest.raises(ValueError):
+        Config(data_dir=tmp_path / "scrapo", **kwargs)
+
+
+def test_empty_string_env_falls_back_to_default(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCRAPO_DATA_DIR", str(tmp_path / "scrapo"))
+    monkeypatch.setenv("SCRAPO_CONCURRENCY", "")
+    assert Config.from_env().max_concurrency == 8

@@ -42,6 +42,63 @@ def _ip_is_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     )
 
 
+def _parse_inet_part(part: str) -> int | None:
+    """Parse one number in inet_aton style: ``0x``-prefix hex, leading-``0`` octal,
+    else decimal. Returns ``None`` for anything that isn't a clean integer literal."""
+    if not part:
+        return None
+    p = part.lower()
+    try:
+        if p.startswith("0x"):
+            return int(p, 16)
+        if len(p) > 1 and p.startswith("0"):
+            return int(p, 8)
+        return int(p, 10)
+    except ValueError:
+        return None
+
+
+def _numeric_ip(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    """Recognise IP literals that aren't plain dotted-decimal: decimal integer
+    (``2130706433``), hex (``0x7f000001``), short-form (``127.1``), and dotted
+    octal/hex parts (``0177.0.0.1``, ``0x7f.0.0.1``). Returns the canonical IP if
+    parseable, or ``None`` for real hostnames. Mirrors ``inet_aton(3)`` semantics."""
+    # IPv6 literal — urlparse strips the brackets before we see it.
+    if ":" in host:
+        try:
+            return ipaddress.IPv6Address(host)
+        except ValueError:
+            return None
+    # Common case: plain dotted-decimal.
+    try:
+        return ipaddress.IPv4Address(host)
+    except ValueError:
+        pass
+    parts = host.split(".")
+    if not 1 <= len(parts) <= 4 or not all(parts):
+        return None
+    nums: list[int] = []
+    for p in parts:
+        n = _parse_inet_part(p)
+        if n is None or n < 0:
+            return None
+        nums.append(n)
+    try:
+        if len(nums) == 1 and nums[0] < (1 << 32):
+            packed = nums[0]
+        elif len(nums) == 4 and all(n < 256 for n in nums):
+            packed = (nums[0] << 24) | (nums[1] << 16) | (nums[2] << 8) | nums[3]
+        elif len(nums) == 3 and nums[0] < 256 and nums[1] < 256 and nums[2] < 65536:
+            packed = (nums[0] << 24) | (nums[1] << 16) | nums[2]
+        elif len(nums) == 2 and nums[0] < 256 and nums[1] < (1 << 24):
+            packed = (nums[0] << 24) | nums[1]
+        else:
+            return None
+        return ipaddress.IPv4Address(packed)
+    except (ValueError, OverflowError):
+        return None
+
+
 def check_url(url: str, *, allow_private: bool = False) -> None:
     """Raise SsrfError if ``url`` is not a fetchable public http(s) target."""
     parsed = urlparse(url)
@@ -53,10 +110,7 @@ def check_url(url: str, *, allow_private: bool = False) -> None:
     if allow_private:
         return
 
-    try:
-        ip = ipaddress.ip_address(host)
-    except ValueError:
-        ip = None
+    ip = _numeric_ip(host)
     if ip is not None:
         if _ip_is_blocked(ip):
             raise SsrfError(f"refusing to fetch private/internal address: {host}")

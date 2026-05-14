@@ -113,12 +113,14 @@ def _same_html(store: ReplayStore, a: dict[str, Any], b: dict[str, Any]) -> bool
     pa, pb = a.get("html_path"), b.get("html_path")
     if not (pa and pb):
         return False
-    from pathlib import Path
-
-    fa, fb = Path(pa), Path(pb)
-    if not (fa.exists() and fb.exists()):
+    if pa == pb:
+        # The conditional-GET path points two runs at the same archived snapshot.
+        return True
+    ba = store.snapshots.get(pa)
+    bb = store.snapshots.get(pb)
+    if ba is None or bb is None:
         return False
-    return fa.stat().st_size == fb.stat().st_size and fa.read_bytes() == fb.read_bytes()
+    return len(ba) == len(bb) and ba == bb
 
 
 def _diff(a: dict[str, Any], b: dict[str, Any]) -> list[FieldDiff]:

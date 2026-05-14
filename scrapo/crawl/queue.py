@@ -41,15 +41,19 @@ class RequestQueue:
         self.db_path = db_path
         self.crawl_id = crawl_id
         self._lock = asyncio.Lock()
+        self._init_lock = asyncio.Lock()
         self._initialized = False
 
     async def _ensure(self) -> None:
         if self._initialized:
             return
-        async with connect(self.db_path) as db:
-            await db.executescript(_SCHEMA)
-            await db.commit()
-        self._initialized = True
+        async with self._init_lock:
+            if self._initialized:
+                return
+            async with connect(self.db_path) as db:
+                await db.executescript(_SCHEMA)
+                await db.commit()
+            self._initialized = True
 
     async def enqueue(
         self,

@@ -8,7 +8,9 @@ string it returns is what the ``runs`` table records.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
+import gzip
 import json
 import time
 from dataclasses import asdict
@@ -64,18 +66,22 @@ class ReplayStore:
             config.snapshot_backend, local_root=config.snapshot_dir
         )
         self._initialized = False
+        self._init_lock = asyncio.Lock()
 
     async def _ensure(self) -> None:
         if self._initialized:
             return
-        async with connect(self.db_path) as db:
-            await db.executescript(_SCHEMA)
-            for column, decl in _MIGRATIONS:
-                # column already exists on a fresh DB (in _SCHEMA) or one migrated earlier
-                with contextlib.suppress(aiosqlite.OperationalError):
-                    await db.execute(f"ALTER TABLE runs ADD COLUMN {column} {decl}")
-            await db.commit()
-        self._initialized = True
+        async with self._init_lock:
+            if self._initialized:
+                return
+            async with connect(self.db_path) as db:
+                await db.executescript(_SCHEMA)
+                for column, decl in _MIGRATIONS:
+                    # column already exists on a fresh DB (in _SCHEMA) or one migrated earlier
+                    with contextlib.suppress(aiosqlite.OperationalError):
+                        await db.execute(f"ALTER TABLE runs ADD COLUMN {column} {decl}")
+                await db.commit()
+            self._initialized = True
 
     async def record(
         self,
@@ -155,7 +161,13 @@ class ReplayStore:
         raw = self.snapshots.get(rec["html_path"])
         if raw is None:
             return None
-        return gunzip(raw).decode("utf-8", errors="replace")
+        # A snapshot can be corrupt (truncated by a crash mid-write, or written
+        # by an old version that did not gzip). Treat both as "not available" so
+        # the conditional-GET path falls back to a fresh fetch instead of raising.
+        try:
+            return gunzip(raw).decode("utf-8", errors="replace")
+        except (gzip.BadGzipFile, OSError, EOFError):
+            return None
 
     async def list_runs(self, url: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
         await self._ensure()

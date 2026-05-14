@@ -43,6 +43,23 @@ def test_geo_policy_open():
     assert g.is_allowed(None)
 
 
+def test_geo_policy_denied_is_case_insensitive():
+    # Caller passes upper-case country codes; the policy must still deny them
+    # at check time (regions are normalised to lowercase internally).
+    g = GeoPolicy(denied=frozenset({"RU", "CN"}))
+    assert not g.is_allowed("ru")
+    assert not g.is_allowed("RU")
+    assert not g.is_allowed("Cn")
+    assert g.is_allowed("us")
+
+
+def test_geo_policy_allowed_is_case_insensitive():
+    g = GeoPolicy(allowed=frozenset({"US", "DE"}), require_match=True)
+    assert g.is_allowed("us")
+    assert g.is_allowed("DE")
+    assert not g.is_allowed("FR")
+
+
 @pytest.mark.asyncio
 async def test_robots_gate_disabled_allows_all():
     gate = RobotsGate("scrapo", enabled=False)

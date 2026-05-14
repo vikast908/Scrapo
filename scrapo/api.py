@@ -338,7 +338,10 @@ async def crawl_stream(
 
     cfg = config or get_config()
     shared_router = TierRouter(cfg, proxy_adapter=proxy_adapter)
-    queue: asyncio.Queue[object] = asyncio.Queue()
+    # Bounded so a slow consumer back-pressures the scheduler. With unbounded
+    # queueing, a long crawl with a slow downstream sink would buffer every
+    # ScrapeResult (HTML, markdown, chunks, extraction) in memory before yield.
+    queue: asyncio.Queue[object] = asyncio.Queue(maxsize=max(cfg.max_concurrency * 2, 2))
     sentinel: object = object()
 
     async def _scrape(url: str, *, budget: Budget | None = None) -> ScrapeResult:
@@ -375,7 +378,11 @@ async def crawl_stream(
             task.cancel()
             with contextlib.suppress(BaseException):
                 await task
-        await shared_router.aclose()
+        # Don't let a teardown failure mask the original consumer exception.
+        try:
+            await shared_router.aclose()
+        except Exception as exc:  # noqa: BLE001 - logged, then dropped on purpose
+            log.warning("scrapo.crawl_stream.router_teardown_failed", err=str(exc))
 
 
 def _prior_headers(prior: dict[str, Any]) -> dict[str, str]:

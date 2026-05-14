@@ -80,6 +80,12 @@ class BrowserTier:
 
         captured: list[dict[str, Any]] = []
         start = time.perf_counter()
+        nav_error: str | None = None
+        html = ""
+        status = 0
+        headers: dict[str, Any] = {}
+        final_url = url
+        shot: bytes | None = None
         async with self._get_pool().context(**ctx_kwargs) as context:
             if cookies:
                 await context.add_cookies(cookies)
@@ -90,18 +96,26 @@ class BrowserTier:
                 page.on("response", _make_xhr_capturer(captured))
             if tier is Tier.BROWSER_STEALTH:
                 await self._apply_stealth(page)
-            response = await page.goto(
-                url, timeout=self.config.request_timeout * 1000, wait_until="domcontentloaded"
-            )
-            if wait_for:
+            try:
+                response = await page.goto(
+                    url, timeout=self.config.request_timeout * 1000, wait_until="domcontentloaded"
+                )
+            except Exception as exc:  # Playwright TimeoutError / navigation errors
+                response = None
+                nav_error = f"browser-nav:{exc.__class__.__name__}"
+                log.info("scrapo.browser.nav_error", url=url, err=str(exc))
+            if response is not None:
+                if wait_for:
+                    with contextlib.suppress(Exception):
+                        await page.wait_for_selector(wait_for, timeout=10_000)
                 with contextlib.suppress(Exception):
-                    await page.wait_for_selector(wait_for, timeout=10_000)
-
-            html = await page.content()
-            status = response.status if response else 0
-            headers = dict(response.headers) if response else {}
-            final_url = page.url
-            shot = await page.screenshot(full_page=False) if screenshot else None
+                    html = await page.content()
+                status = response.status
+                headers = dict(response.headers)
+                final_url = page.url
+                if screenshot:
+                    with contextlib.suppress(Exception):
+                        shot = await page.screenshot(full_page=False)
             elapsed_ms = (time.perf_counter() - start) * 1000.0
 
         result = annotate(
@@ -116,6 +130,8 @@ class BrowserTier:
                 proxy_region=proxy_region,
                 screenshot_png=shot,
                 captured_json=captured[:50],
+                blocked=nav_error is not None,
+                block_reason=nav_error,
             )
         )
         await report_outcome(self.proxy_adapter, pcfg, result)
@@ -126,7 +142,11 @@ class BrowserTier:
         from urllib.parse import urlparse
 
         parsed = urlparse(proxy_url)
-        out: dict[str, str] = {"server": f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"}
+        # Omit the port when the URL doesn't carry one — otherwise we'd hand
+        # Playwright the literal string "host:None" which it rejects opaquely.
+        host = parsed.hostname or ""
+        port_part = f":{parsed.port}" if parsed.port else ""
+        out: dict[str, str] = {"server": f"{parsed.scheme}://{host}{port_part}"}
         if parsed.username:
             out["username"] = parsed.username
         if parsed.password:

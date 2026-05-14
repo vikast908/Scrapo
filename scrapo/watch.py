@@ -14,6 +14,7 @@ out of the library.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -59,37 +60,44 @@ class Watch:
     last_run_id: str | None = None
     last: ScrapeResult | None = None
     _store: ReplayStore = field(init=False, repr=False)
+    _lock: asyncio.Lock = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         self.config = self.config or get_config()
         self._store = ReplayStore(self.config)
+        # Serialise check()/refresh(): without this, two concurrent refreshes
+        # would both read the same last_run_id, diff against the same old run,
+        # and race to overwrite the new id back onto the instance.
+        self._lock = asyncio.Lock()
 
     async def _scrape_once(self) -> ScrapeResult:
         return await scrape(self.url, schema=self.schema, config=self.config, **self.scrape_kwargs)
 
     async def check(self) -> ScrapeResult:
         """Scrape now and remember the run, without computing a diff."""
-        result = await self._scrape_once()
-        self.last, self.last_run_id = result, result.run_id
-        return result
+        async with self._lock:
+            result = await self._scrape_once()
+            self.last, self.last_run_id = result, result.run_id
+            return result
 
     async def refresh(self) -> ChangeSet:
         """Re-scrape and return what changed since the last run."""
-        prev_run_id = self.last_run_id
-        result = await self._scrape_once()
-        not_modified = bool(result.not_modified)
-        diff: DiffReport | None = None
-        if prev_run_id and prev_run_id != result.run_id:
-            diff = await diff_runs(self._store, prev_run_id, result.run_id)
-        changed = (
-            not not_modified
-            and diff is not None
-            and (bool(diff.field_changes) or not diff.same_html)
-        )
-        self.last, self.last_run_id = result, result.run_id
-        return ChangeSet(
-            url=self.url, changed=changed, not_modified=not_modified, result=result, diff=diff
-        )
+        async with self._lock:
+            prev_run_id = self.last_run_id
+            result = await self._scrape_once()
+            not_modified = bool(result.not_modified)
+            diff: DiffReport | None = None
+            if prev_run_id and prev_run_id != result.run_id:
+                diff = await diff_runs(self._store, prev_run_id, result.run_id)
+            changed = (
+                not not_modified
+                and diff is not None
+                and (bool(diff.field_changes) or not diff.same_html)
+            )
+            self.last, self.last_run_id = result, result.run_id
+            return ChangeSet(
+                url=self.url, changed=changed, not_modified=not_modified, result=result, diff=diff
+            )
 
 
 async def watch(

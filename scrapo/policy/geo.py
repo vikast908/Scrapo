@@ -2,16 +2,26 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(slots=True)
 class GeoPolicy:
-    """Allow/deny lists for proxy regions."""
+    """Allow/deny lists for proxy regions.
+
+    Region codes are matched case-insensitively. The constructor normalises both
+    ``allowed`` and ``denied`` to lowercase so a caller passing ``{"RU", "CN"}``
+    isn't silently ignored at check time.
+    """
 
     allowed: frozenset[str] | None = None
-    denied: frozenset[str] = frozenset()
+    denied: frozenset[str] = field(default_factory=frozenset)
     require_match: bool = False
+
+    def __post_init__(self) -> None:
+        if self.allowed is not None:
+            self.allowed = frozenset(r.lower() for r in self.allowed)
+        self.denied = frozenset(r.lower() for r in self.denied)
 
     def is_allowed(self, region: str | None) -> bool:
         if region is None:

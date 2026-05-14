@@ -28,6 +28,33 @@ def test_local_snapshot_store_roundtrip(tmp_path):
     assert store.get(str(tmp_path / "does-not-exist")) is None
 
 
+def test_local_snapshot_store_writes_atomically(tmp_path):
+    # The tempfile-and-rename path should not leave a .tmp file behind on success.
+    store = LocalSnapshotStore(tmp_path / "snaps")
+    loc = store.put("run-atomic.html.gz", gz(b"<html>atomic</html>"))
+    leftovers = list((tmp_path / "snaps").glob("*.tmp"))
+    assert not leftovers, f"unexpected temp files: {leftovers}"
+    assert gunzip(store.get(loc)) == b"<html>atomic</html>"
+
+
+@pytest.mark.asyncio
+async def test_load_html_returns_none_on_corrupt_snapshot(tmp_path):
+    cfg = Config(data_dir=tmp_path / "d")
+    store = ReplayStore(cfg)
+    rec = RunRecord.new("https://e.com/")
+    fetch = FetchResult(
+        url="https://e.com/", final_url="https://e.com/", status=200,
+        html="<html>ok</html>", headers={}, tier_used=Tier.HTTP,
+    )
+    await store.record(rec, fetch, None)
+    # Corrupt the snapshot — simulate a crash mid-write or a manual tamper.
+    row = await store.get(rec.run_id)
+    from pathlib import Path
+    Path(row["html_path"]).write_bytes(b"not gzip data at all")
+    # load_html must not raise; conditional GET fallback relies on a clean None.
+    assert await store.load_html(rec.run_id) is None
+
+
 def test_from_backend_picks_implementation(tmp_path):
     assert isinstance(from_backend("local", local_root=tmp_path), LocalSnapshotStore)
     s3 = from_backend("s3://my-bucket/some/prefix", local_root=tmp_path)

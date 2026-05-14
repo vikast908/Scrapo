@@ -20,9 +20,14 @@ driven by agents. Keep these in mind:
 
 - **SSRF guard.** `scrapo` refuses to fetch loopback, link-local (including `169.254.169.254`),
   private RFC 1918 / ULA ranges, and well-known local hostnames *by host*, without DNS resolution.
-  A public hostname that *resolves* to an internal IP (DNS rebinding) is **not** caught here; if that
-  is in your threat model, run scrapo behind an egress network policy. Set `allow_private_hosts=True`
-  / `SCRAPO_ALLOW_PRIVATE_HOSTS=1` only when you intend to scrape internal services.
+  IP literals are parsed with `inet_aton`-style semantics, so obfuscated encodings of internal
+  addresses (decimal `2130706433`, hex `0x7f000001`, short-form `127.1`, dotted-octal `0177.0.0.1`)
+  are caught alongside the standard dotted-quad. A public hostname that *resolves* to an internal IP
+  (DNS rebinding) is **not** caught here; if that is in your threat model, run scrapo behind an
+  egress network policy. Set `allow_private_hosts=True` / `SCRAPO_ALLOW_PRIVATE_HOSTS=1` only when
+  you intend to scrape internal services.
+- **Agent tier (Tier 4) `goto` actions** chosen by the LLM go through the same SSRF guard, so a
+  prompt-injected page cannot talk the agent into navigating to an internal target.
 - **Prompt injection.** Page content goes into the extraction prompt. Schema validation limits the
   blast radius for structured extraction, but if you build agentic flows on top, treat fetched text
   as untrusted input.
