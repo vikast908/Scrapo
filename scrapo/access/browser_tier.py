@@ -86,37 +86,47 @@ class BrowserTier:
         headers: dict[str, Any] = {}
         final_url = url
         shot: bytes | None = None
-        async with self._get_pool().context(**ctx_kwargs) as context:
-            if cookies:
-                await context.add_cookies(cookies)
-            page = await context.new_page()
-            if self.config.browser_block_resources:
-                await page.route("**/*", _block_heavy_resources)
-            if self.config.browser_capture_xhr:
-                page.on("response", _make_xhr_capturer(captured))
-            if tier is Tier.BROWSER_STEALTH:
-                await self._apply_stealth(page)
-            try:
-                response = await page.goto(
-                    url, timeout=self.config.request_timeout * 1000, wait_until="domcontentloaded"
-                )
-            except Exception as exc:  # Playwright TimeoutError / navigation errors
-                response = None
-                nav_error = f"browser-nav:{exc.__class__.__name__}"
-                log.info("scrapo.browser.nav_error", url=url, err=str(exc))
-            if response is not None:
-                if wait_for:
+        try:
+            async with self._get_pool().context(**ctx_kwargs) as context:
+                if cookies:
+                    await context.add_cookies(cookies)
+                page = await context.new_page()
+                if self.config.browser_block_resources:
+                    await page.route("**/*", _block_heavy_resources)
+                if self.config.browser_capture_xhr:
+                    page.on("response", _make_xhr_capturer(captured))
+                if tier is Tier.BROWSER_STEALTH:
+                    await self._apply_stealth(page)
+                try:
+                    response = await page.goto(
+                        url, timeout=self.config.request_timeout * 1000, wait_until="domcontentloaded"
+                    )
+                except Exception as exc:  # Playwright TimeoutError / navigation errors
+                    response = None
+                    nav_error = f"browser-nav:{exc.__class__.__name__}"
+                    log.info("scrapo.browser.nav_error", url=url, err=str(exc))
+                if response is not None:
+                    if wait_for:
+                        with contextlib.suppress(Exception):
+                            await page.wait_for_selector(wait_for, timeout=10_000)
                     with contextlib.suppress(Exception):
-                        await page.wait_for_selector(wait_for, timeout=10_000)
-                with contextlib.suppress(Exception):
-                    html = await page.content()
-                status = response.status
-                headers = dict(response.headers)
-                final_url = page.url
-                if screenshot:
-                    with contextlib.suppress(Exception):
-                        shot = await page.screenshot(full_page=False)
-            elapsed_ms = (time.perf_counter() - start) * 1000.0
+                        html = await page.content()
+                    status = response.status
+                    headers = dict(response.headers)
+                    final_url = page.url
+                    if screenshot:
+                        with contextlib.suppress(Exception):
+                            shot = await page.screenshot(full_page=False)
+        except Exception as exc:
+            # Browser/context startup failed (e.g. Chromium binary not installed).
+            # Local fault, not the proxy's — return blocked without a health report.
+            log.info("scrapo.browser.launch_error", url=url, err=str(exc))
+            return FetchResult(
+                url=url, final_url=url, status=0, html="", headers={}, tier_used=tier,
+                elapsed_ms=(time.perf_counter() - start) * 1000.0, proxy_region=proxy_region,
+                blocked=True, block_reason=f"browser-launch:{exc.__class__.__name__}",
+            )
+        elapsed_ms = (time.perf_counter() - start) * 1000.0
 
         result = annotate(
             FetchResult(
@@ -130,10 +140,13 @@ class BrowserTier:
                 proxy_region=proxy_region,
                 screenshot_png=shot,
                 captured_json=captured[:50],
-                blocked=nav_error is not None,
-                block_reason=nav_error,
             )
         )
+        if nav_error is not None:
+            # annotate() classifies the (empty) body; the navigation error is the
+            # real cause and must win, or a timeout reads as "empty-body".
+            result.blocked = True
+            result.block_reason = nav_error
         await report_outcome(self.proxy_adapter, pcfg, result)
         return result
 
