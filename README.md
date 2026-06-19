@@ -572,7 +572,7 @@ The suite is **fully offline**; no test hits the network or a paid LLM. It cover
 
 ## Contributing
 
-Issues and PRs welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the dev setup and house rules, and [SECURITY.md](SECURITY.md) for reporting vulnerabilities.
+Issues and PRs welcome. See [CONTRIBUTORS.md](CONTRIBUTORS.md) for the dev setup, quality gates, and house rules, the [Tests](#tests) section above, and [SECURITY.md](SECURITY.md) for reporting vulnerabilities.
 
 ---
 

@@ -22,4 +22,4 @@ When your PR lands, add a row to the table below.
 
 Every merged contribution earns a row in the table above. We credit by name and GitHub handle, alongside the area you worked on (access, extract, shape, replay, policy, crawl, agent, docs, or tests). Significant or sustained work may also be acknowledged in the release notes in [CHANGELOG.md](CHANGELOG.md).
 
-New here? Start with [CONTRIBUTING.md](CONTRIBUTING.md) for the dev setup, the quality gates, and the house rules.
+New here? Set up with `pip install -e ".[dev]"` (add `playwright install chromium` for the browser tiers), then make sure the quality gates pass before opening a PR: `pytest -q` (the suite is fully offline — no test may hit the network or a paid LLM), `ruff check .`, and `mypy scrapo/` (strict). See the [Tests](README.md#tests) and [Configuration](README.md#configuration) sections of the README for more.
