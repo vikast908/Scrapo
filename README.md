@@ -6,10 +6,9 @@
 
 *Selector-cheap. LLM-resilient. Replay-safe. Self-hosted.*
 
-[![CI](https://github.com/vikast908/Scrapo/actions/workflows/ci.yml/badge.svg)](https://github.com/vikast908/Scrapo/actions/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB?style=flat-square)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-22c55e?style=flat-square)](LICENSE)
-[![Status: alpha](https://img.shields.io/badge/status-alpha-f59e0b?style=flat-square)](https://github.com/vikast908/Scrapo)
+[![Status: beta](https://img.shields.io/badge/status-beta-3b82f6?style=flat-square)](https://github.com/vikast908/Scrapo)
 
 [Quickstart](#quickstart) | [Architecture](#architecture) | [Features](#features) | [Why Scrapo](#why-scrapo) | [CLI](#cli) | [MCP](#use-as-an-mcp-server)
 
@@ -578,7 +577,7 @@ Issues and PRs welcome. See [CONTRIBUTORS.md](CONTRIBUTORS.md) for the dev setup
 
 ## Project status
 
-Alpha. The public API (`scrape`, `extract`, `crawl`, `crawl_stream`, `watch`) is stable, as are tier escalation, model pinning, replay schema, typed results, list extraction, content-type routing, the pluggable snapshot store, the rotating proxy pool, conditional requests, and the MCP tool surface. The reference Tier-4 agent driver (with action caching: record the steps to a goal, replay them token-free, self-heal back to the LLM when a step breaks) and the in-browser request interception are functional but lightly exercised (a real browser is needed to validate them end to end). The library roadmap is otherwise complete; the only thing intentionally left out is a hosted control plane (a scheduler that runs and persists a list of watches, sends alerts, and gives you a web console). That would be a separate deployable service rather than part of the library.
+Beta. The public API (`scrape`, `extract`, `crawl`, `crawl_stream`, `watch`, `map_site`, `batch_scrape`) is stable, as are tier escalation, model pinning, replay schema, typed results, list extraction, content-type routing, main-content extraction, the pluggable snapshot store, the rotating proxy pool, conditional requests, and the MCP tool surface. The reference Tier-4 agent driver (with action caching: record the steps to a goal, replay them token-free, self-heal back to the LLM when a step breaks) and the in-browser request interception are functional but lightly exercised (a real browser is needed to validate them end to end). The library roadmap is otherwise complete; the only thing intentionally left out is a hosted control plane (a scheduler that runs and persists a list of watches, sends alerts, and gives you a web console). That would be a separate deployable service rather than part of the library.
 
 See [CHANGELOG.md](CHANGELOG.md) for release notes.
 
