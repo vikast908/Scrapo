@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import structlog
 
+from scrapo.access.actions import Action
 from scrapo.access.adapters.base import ProxyAdapter, registry
 from scrapo.access.agent_tier import AgentDriver, AgentTier
 from scrapo.access.browser_tier import BrowserTier
@@ -60,6 +61,7 @@ class TierRouter:
         wait_for: str | None = None,
         screenshot: bool = False,
         agent_goal: str | None = None,
+        actions: list[Action] | None = None,
         storage_state: str | None = None,
         conditional: Conditional | None = None,
     ) -> FetchResult:
@@ -72,6 +74,7 @@ class TierRouter:
                 wait_for=wait_for,
                 screenshot=screenshot,
                 agent_goal=agent_goal,
+                actions=actions,
                 storage_state=storage_state,
                 conditional=conditional,
             )
@@ -85,6 +88,7 @@ class TierRouter:
                 wait_for=wait_for,
                 screenshot=screenshot,
                 agent_goal=agent_goal,
+                actions=actions,
                 storage_state=storage_state,
                 conditional=conditional,
             )
@@ -138,6 +142,7 @@ class TierRouter:
         wait_for: str | None,
         screenshot: bool,
         agent_goal: str | None,
+        actions: list[Action] | None = None,
         storage_state: str | None,
         conditional: Conditional | None = None,
     ) -> FetchResult:
@@ -152,6 +157,12 @@ class TierRouter:
                 storage_state=storage_state,
             )
         if tier is Tier.AGENT:
-            goal = agent_goal or f"navigate to {url} and surface its main content"
-            return await self.agent.fetch(url, goal=goal, storage_state=storage_state)
+            # Don't synthesize a goal when explicit actions were given — a goal
+            # would invoke the LLM driver, but Interact actions are deterministic.
+            goal = agent_goal
+            if goal is None and not actions:
+                goal = f"navigate to {url} and surface its main content"
+            return await self.agent.fetch(
+                url, goal=goal, actions=actions, storage_state=storage_state
+            )
         raise ValueError(f"unhandled tier: {tier}")

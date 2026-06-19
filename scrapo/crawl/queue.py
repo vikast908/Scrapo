@@ -109,7 +109,7 @@ class RequestQueue:
 
     async def complete(self, request_id: int) -> None:
         await self._ensure()
-        async with connect(self.db_path) as db:
+        async with self._lock, connect(self.db_path) as db:
             await db.execute(
                 "UPDATE requests SET status='done', finished_at=? WHERE id=?",
                 (time.time(), request_id),
@@ -119,7 +119,7 @@ class RequestQueue:
     async def fail(self, request_id: int, error: str, retry: bool = True) -> None:
         await self._ensure()
         new_status = "pending" if retry else "failed"
-        async with connect(self.db_path) as db:
+        async with self._lock, connect(self.db_path) as db:
             await db.execute(
                 "UPDATE requests SET status=?, error=?, claimed_at=NULL WHERE id=?",
                 (new_status, error[:500], request_id),

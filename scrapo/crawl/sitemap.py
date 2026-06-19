@@ -13,6 +13,9 @@ from xml.etree import ElementTree as ET
 import httpx
 import structlog
 
+from scrapo.config import get_config
+from scrapo.security import SsrfError, safe_get
+
 log = structlog.get_logger(__name__)
 
 
@@ -33,8 +36,9 @@ async def discover_sitemap_urls(
     seen: set[str] = set()
     queue: list[str] = [urljoin(origin if origin.endswith("/") else origin + "/", "sitemap.xml")]
     headers = {"User-Agent": user_agent}
+    allow_private = get_config().allow_private_hosts
     async with httpx.AsyncClient(
-        timeout=request_timeout, headers=headers, follow_redirects=True
+        timeout=request_timeout, headers=headers, follow_redirects=False
     ) as client:
         while queue and len(found) < max_urls and len(seen) < max_sitemaps:
             sm_url = queue.pop(0)
@@ -42,7 +46,13 @@ async def discover_sitemap_urls(
                 continue
             seen.add(sm_url)
             try:
-                resp = await client.get(sm_url)
+                # safe_get validates the target (and every redirect hop) against the
+                # SSRF guard — important because sitemap-index <loc> entries are
+                # attacker-influenceable and could point at internal addresses.
+                resp = await safe_get(client, sm_url, allow_private=allow_private)
+            except SsrfError as e:
+                log.debug("scrapo.sitemap.ssrf_blocked", url=sm_url, err=str(e))
+                continue
             except httpx.HTTPError as e:
                 log.debug("scrapo.sitemap.fetch_failed", url=sm_url, err=str(e))
                 continue

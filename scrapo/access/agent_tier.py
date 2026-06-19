@@ -12,6 +12,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
 from scrapo.access.action_cache import ActionCache
+from scrapo.access.actions import Action, run_actions
 from scrapo.access.signals import annotate
 from scrapo.config import Config
 from scrapo.types import FetchResult, Tier
@@ -54,8 +55,9 @@ class AgentTier:
         self,
         url: str,
         *,
-        goal: str,
+        goal: str | None = None,
         storage_state: str | None = None,
+        actions: list[Action] | None = None,
     ) -> FetchResult:
         try:
             from playwright.async_api import async_playwright
@@ -71,7 +73,10 @@ class AgentTier:
                 block_reason=f"playwright-missing:{e}",
             )
 
-        if self.driver is None:
+        # Interact (explicit actions) is deterministic and needs no LLM, so the
+        # tier is usable with actions alone. The "no driver configured" guard only
+        # fires for the goal-driven path with neither actions nor a driver.
+        if self.driver is None and not actions:
             return FetchResult(
                 url=url,
                 final_url=url,
@@ -93,7 +98,13 @@ class AgentTier:
             page = await context.new_page()
             try:
                 await page.goto(url, timeout=self.config.request_timeout * 1000)
-                await self.driver.run(page, goal, cache=self.action_cache)
+                # Deterministic actions run first (no LLM), then the goal-driven loop.
+                if actions:
+                    await run_actions(
+                        page, actions, allow_private=self.config.allow_private_hosts
+                    )
+                if goal and self.driver is not None:
+                    await self.driver.run(page, goal, cache=self.action_cache)
                 html = await page.content()
                 final_url = page.url
                 elapsed_ms = (time.perf_counter() - start) * 1000.0

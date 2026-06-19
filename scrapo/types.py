@@ -32,17 +32,44 @@ class Tier(IntEnum):
 
 @dataclass(slots=True)
 class Budget:
-    """Cost ceiling for a single scrape or crawl run."""
+    """Cost ceiling for a single scrape or crawl run.
+
+    ``max_llm_calls`` / ``max_cost_usd`` are the caps; ``llm_calls_made`` /
+    ``spent_usd`` are mutable running counters updated via :meth:`record_llm`
+    as the run progresses.
+
+    Concurrency note: in a crawl, ONE Budget instance is shared across
+    concurrent asyncio workers. asyncio is single-threaded, so a check-then-call
+    (``can_use_llm`` followed by an awaited LLM call) has a small over-budget
+    race: N workers can all pass the check before any of them records its spend,
+    so the run can exceed the cap by up to ~N calls. That overshoot is bounded
+    by the concurrency level and is accepted by design — we deliberately do NOT
+    add locks to this dataclass.
+    """
 
     max_llm_calls: int | None = None
     max_cost_usd: float | None = None
     max_tier: Tier = Tier.AGENT
     max_pages: int | None = None
+    # Mutable running totals across the whole scrape/crawl run.
+    llm_calls_made: int = 0
+    spent_usd: float = 0.0
 
-    def can_use_llm(self, calls_so_far: int) -> bool:
-        if self.max_llm_calls is None:
-            return True
-        return calls_so_far < self.max_llm_calls
+    def can_use_llm(self, _calls_so_far: int = 0) -> bool:
+        """Whether another LLM call is permitted under the configured caps.
+
+        The positional ``_calls_so_far`` argument is retained only for
+        backwards compatibility with old call sites; the decision is based on
+        the internal counters, not the argument.
+        """
+        if self.max_llm_calls is not None and self.llm_calls_made >= self.max_llm_calls:
+            return False
+        return not (self.max_cost_usd is not None and self.spent_usd >= self.max_cost_usd)
+
+    def record_llm(self, cost_usd: float) -> None:
+        """Account for one LLM call that actually happened (and its cost)."""
+        self.llm_calls_made += 1
+        self.spent_usd += cost_usd
 
     def can_use_tier(self, tier: Tier) -> bool:
         return tier <= self.max_tier

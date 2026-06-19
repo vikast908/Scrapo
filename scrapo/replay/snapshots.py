@@ -14,7 +14,15 @@ import gzip
 import os
 import uuid
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
+
+import structlog
+
+_log = structlog.get_logger(__name__)
+
+# gzip level for HTML/JSON snapshots. 4 gives noticeably less CPU than the
+# default 6 at a near-identical ratio on HTML (lots of repeated markup).
+GZIP_LEVEL = 4
 
 
 class SnapshotStore(Protocol):
@@ -76,8 +84,34 @@ class S3SnapshotStore:
             obj = self._client.get_object(Bucket=bucket, Key=key)
             body: bytes = obj["Body"].read()
             return body
-        except Exception:
-            return None
+        except _client_error() as exc:
+            # Genuine not-found is the expected "no snapshot" case → None.
+            # Anything else (auth, throttling, transient network) is a real
+            # error we must not silently swallow as "identical/no snapshot".
+            response = getattr(exc, "response", {}) or {}
+            error_code = response.get("Error", {}).get("Code")
+            if error_code in ("NoSuchKey", "404", "NoSuchBucket"):
+                return None
+            _log.warning("s3_snapshot_get_failed", bucket=bucket, key=key, error_code=error_code)
+            raise
+
+
+def _client_error() -> type[BaseException]:
+    """Lazily resolve ``botocore.exceptions.ClientError``.
+
+    boto3/botocore is an optional dependency (the ``[s3]`` extra), so the import
+    is guarded. If botocore is unavailable we fall back to a class that catches
+    nothing meaningful from a non-S3 store, deliberately *not* widening to
+    ``Exception``/``BaseException``.
+    """
+    try:
+        from botocore.exceptions import ClientError
+    except ImportError:
+        class _UnreachableError(Exception):
+            pass
+
+        return _UnreachableError
+    return cast("type[BaseException]", ClientError)
 
 
 def from_backend(backend: str, *, local_root: Path) -> SnapshotStore:
@@ -90,7 +124,7 @@ def from_backend(backend: str, *, local_root: Path) -> SnapshotStore:
 
 
 def gz(data: bytes) -> bytes:
-    return gzip.compress(data, compresslevel=6)
+    return gzip.compress(data, compresslevel=GZIP_LEVEL)
 
 
 def gunzip(data: bytes) -> bytes:

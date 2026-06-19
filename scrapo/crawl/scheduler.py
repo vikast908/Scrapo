@@ -74,13 +74,13 @@ class CrawlScheduler:
         on_page: PageHandler | None = None,
     ) -> dict[str, int]:
         budget = budget or Budget(max_tier=self.config.default_max_tier, max_pages=200)
-        seed_hosts = {urlparse(s).netloc for s in seeds}
+        seed_hosts = {_canonical_host(urlparse(s).netloc) for s in seeds}
 
         async def _enqueue(u: str, *, depth: int, parent: str | None) -> None:
-            if same_host_only and urlparse(u).netloc not in seed_hosts:
+            if same_host_only and _canonical_host(urlparse(u).netloc) not in seed_hosts:
                 return
             n = normalize_url(u)
-            if self.dedup.add(n):
+            if await self.dedup.add(n):
                 await self.queue.enqueue(n, depth=depth, parent_url=parent)
 
         for seed in seeds:
@@ -113,21 +113,39 @@ class CrawlScheduler:
 
             try:
                 result = await self.scrape_fn(url, budget=budget)
-                await self.queue.complete(req["id"])
-                pages_done += 1
-                if on_page:
+            except Exception as e:
+                # Genuine fetch/scrape failure — mark failed and (maybe) retry.
+                log.warning("scrapo.crawl.fetch_error", url=url, err=str(e))
+                await self.queue.fail(req["id"], str(e), retry=req["attempts"] < 2)
+                return
+
+            # The fetch succeeded: complete and count the page BEFORE running any
+            # consumer callback so a callback failure can never trigger a re-fetch.
+            await self.queue.complete(req["id"])
+            pages_done += 1
+
+            if on_page:
+                # Isolate the consumer callback: a failing on_page (or a failing
+                # internal emit in crawl_stream) must not retry an already-done page.
+                try:
                     await on_page(result)
+                except Exception as e:  # noqa: BLE001 - logged, then swallowed on purpose
+                    log.warning("scrapo.crawl.on_page_error", url=url, err=str(e))
+
+            # Link/pagination discovery happens after the page is already counted,
+            # so an enqueue hiccup must not re-fail the page; log and move on.
+            try:
                 html = result.get("html") or ""
-                # follow rel="next" pagination at the same depth (max_pages still bounds it)
+                # follow rel="next" pagination at the same depth (max_pages still bounds it).
+                # Routed through _enqueue so it gets the same normalization + dedup as links.
                 next_url = _next_link(url, html)
                 if next_url:
                     await _enqueue(next_url, depth=depth, parent=url)
                 if depth < max_depth:
                     for link in self._extract_links(url, html):
                         await _enqueue(link, depth=depth + 1, parent=url)
-            except Exception as e:
-                log.warning("scrapo.crawl.fetch_error", url=url, err=str(e))
-                await self.queue.fail(req["id"], str(e), retry=req["attempts"] < 2)
+            except Exception as e:  # noqa: BLE001 - logged, then swallowed on purpose
+                log.warning("scrapo.crawl.enqueue_error", url=url, err=str(e))
 
         async def bound(req: dict[str, Any]) -> None:
             nonlocal in_flight
@@ -183,6 +201,16 @@ class CrawlScheduler:
                 continue
             out.append(normalize_url(absu))
         return out
+
+
+def _canonical_host(netloc: str) -> str:
+    """Lowercased host with a leading ``www.`` stripped, so ``example.com`` and
+    ``www.example.com`` are treated as the same host for scope checks. Does NOT
+    broaden to arbitrary subdomains."""
+    host = netloc.lower()
+    if host.startswith("www."):
+        host = host[4:]
+    return host
 
 
 def _next_link(base_url: str, html: str) -> str | None:

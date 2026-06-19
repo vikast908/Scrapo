@@ -1,4 +1,5 @@
 import io
+import json
 
 from pypdf import PdfWriter
 
@@ -74,6 +75,25 @@ def test_pdf_routed():
     assert doc.kind == "pdf"
     assert isinstance(doc.markdown, str)
     assert doc.chunks
+
+
+def test_large_json_keeps_full_data_but_notes_markdown_truncation():
+    # A JSON payload whose pretty rendering exceeds the markdown size limit.
+    big = {"items": [{"i": i, "pad": "x" * 200} for i in range(2000)]}
+    body = json.dumps(big)
+    doc = shape_fetch(_fetch(html=body, headers={"content-type": "application/json"}), "https://e.com/x")
+    assert doc.kind == "json"
+    # Full parsed object is preserved on result.data, not truncated.
+    assert doc.data == big
+    assert len(doc.data["items"]) == 2000
+    # Markdown is size-limited and explicitly says it was truncated.
+    assert "truncated" in doc.markdown.lower()
+    assert "result.data" in doc.markdown
+
+
+def test_small_json_markdown_not_marked_truncated():
+    doc = shape_fetch(_fetch(html='{"a": 1}', headers={"content-type": "application/json"}), "https://e.com/x")
+    assert "truncated" not in doc.markdown.lower()
 
 
 def test_html_is_the_default():

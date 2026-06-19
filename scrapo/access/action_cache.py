@@ -47,8 +47,19 @@ def _host(url: str) -> str:
     return netloc.rsplit(":", 1)[0] if ":" in netloc else netloc or url.lower()
 
 
-def _goal_hash(goal: str) -> str:
-    return hashlib.sha256(goal.strip().lower().encode("utf-8")).hexdigest()[:16]
+def _goal_hash(goal: str, prompt_version: str | None = None) -> str:
+    """Stable key for a goal.
+
+    ``prompt_version`` (the agent driver's prompt hash/version) is folded in when
+    provided so that a changed driver prompt naturally misses recordings made by
+    the old prompt — replaying a stale script against changed expectations would be
+    unsafe. When ``None`` (the default) the key is the bare goal hash, preserving
+    the original behaviour for callers that don't version their prompt.
+    """
+    material = goal.strip().lower()
+    if prompt_version:
+        material = f"{prompt_version}\x00{material}"
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
 
 
 class ActionCache:
@@ -70,12 +81,14 @@ class ActionCache:
                 await db.commit()
             self._initialized = True
 
-    async def get(self, url: str, goal: str) -> list[dict[str, Any]]:
+    async def get(
+        self, url: str, goal: str, *, prompt_version: str | None = None
+    ) -> list[dict[str, Any]]:
         await self._ensure()
         async with connect(self.db_path) as db:
             cur = await db.execute(
                 "SELECT actions_json FROM agent_actions WHERE host=? AND goal_hash=?",
-                (_host(url), _goal_hash(goal)),
+                (_host(url), _goal_hash(goal, prompt_version)),
             )
             row = await cur.fetchone()
         if not row:
@@ -86,7 +99,14 @@ class ActionCache:
             return []
         return [a for a in actions if isinstance(a, dict)] if isinstance(actions, list) else []
 
-    async def put(self, url: str, goal: str, actions: list[dict[str, Any]]) -> None:
+    async def put(
+        self,
+        url: str,
+        goal: str,
+        actions: list[dict[str, Any]],
+        *,
+        prompt_version: str | None = None,
+    ) -> None:
         await self._ensure()
         async with connect(self.db_path) as db:
             await db.execute(
@@ -95,42 +115,54 @@ class ActionCache:
                 "ON CONFLICT(host, goal_hash) DO UPDATE SET "
                 "actions_json=excluded.actions_json, goal=excluded.goal, "
                 "failure_count=0, updated_at=strftime('%s','now')",
-                (_host(url), _goal_hash(goal), goal.strip(), json.dumps(actions)),
+                (_host(url), _goal_hash(goal, prompt_version), goal.strip(), json.dumps(actions)),
             )
             await db.commit()
 
-    async def record_success(self, url: str, goal: str) -> None:
+    async def record_success(
+        self, url: str, goal: str, *, prompt_version: str | None = None
+    ) -> None:
         await self._ensure()
         async with connect(self.db_path) as db:
             await db.execute(
                 "UPDATE agent_actions SET success_count = success_count + 1, failure_count = 0 "
                 "WHERE host=? AND goal_hash=?",
-                (_host(url), _goal_hash(goal)),
+                (_host(url), _goal_hash(goal, prompt_version)),
             )
             await db.commit()
 
-    async def record_failure(self, url: str, goal: str) -> int:
-        """Increment the failure counter; return the current failure count for the key."""
+    async def record_failure(
+        self, url: str, goal: str, *, prompt_version: str | None = None
+    ) -> int:
+        """Increment the failure counter; return the post-increment count for the key.
+
+        The UPDATE and the read of the new count happen in a SINGLE ``connect()``
+        block (via ``RETURNING``) so the value returned is the count this call
+        produced. A previous split implementation did the UPDATE in one connection
+        block and the SELECT in a separate one, which let a concurrent ``put()``
+        (which resets ``failure_count`` to 0) land in between and make the SELECT
+        read 0 — silently missing an eviction. Reading within the same statement
+        closes that read-after-write window regardless of pool serialization.
+        """
         await self._ensure()
         async with connect(self.db_path) as db:
-            await db.execute(
-                "UPDATE agent_actions SET failure_count = failure_count + 1 "
-                "WHERE host=? AND goal_hash=?",
-                (_host(url), _goal_hash(goal)),
-            )
-            await db.commit()
             cur = await db.execute(
-                "SELECT COALESCE(failure_count, 0) FROM agent_actions WHERE host=? AND goal_hash=?",
-                (_host(url), _goal_hash(goal)),
+                "UPDATE agent_actions SET failure_count = failure_count + 1 "
+                "WHERE host=? AND goal_hash=? "
+                "RETURNING failure_count",
+                (_host(url), _goal_hash(goal, prompt_version)),
             )
             row = await cur.fetchone()
+            await db.commit()
         return int(row[0]) if row else 0
 
-    async def invalidate(self, url: str, goal: str) -> None:
+    async def invalidate(
+        self, url: str, goal: str, *, prompt_version: str | None = None
+    ) -> None:
         await self._ensure()
         async with connect(self.db_path) as db:
             await db.execute(
                 "DELETE FROM agent_actions WHERE host=? AND goal_hash=?",
-                (_host(url), _goal_hash(goal)),
+                (_host(url), _goal_hash(goal, prompt_version)),
             )
             await db.commit()

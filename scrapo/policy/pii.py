@@ -12,15 +12,34 @@ from typing import Literal
 
 PiiKind = Literal["email", "phone", "ssn", "credit_card", "ipv4", "iban", "passport"]
 
+# Email: local and domain labels may not start/end with a dot or contain
+# consecutive dots, and the TLD must be alphabetic (rejects ``user@domain.123``
+# and ``a..b@x.com``).
+_EMAIL_LABEL = r"(?<![A-Za-z0-9_%+.\-])[A-Za-z0-9_%+\-]+(?:\.[A-Za-z0-9_%+\-]+)*"
+_EMAIL_DOMAIN = r"(?:[A-Za-z0-9\-]+\.)+[A-Za-z]{2,}"
+
+# Phone: optional ``+``/country code then digit groups separated by space, dot
+# or hyphen (optionally parenthesised area code), with a plausible 7-15 total
+# digit count enforced in ``scan``. The structure requires at least one
+# separator so it does not match bare long integer/ID runs.
+_PHONE_RE = re.compile(
+    r"\+?\d{0,3}[ .\-]?(?:\(\d{1,4}\)[ .\-]?)?\d{2,4}(?:[ .\-]\d{2,4}){1,4}"
+)
+
 _PATTERNS: list[tuple[PiiKind, re.Pattern[str]]] = [
-    ("email", re.compile(r"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}", re.I)),
-    ("phone", re.compile(r"\+?\d[\d\s().\-]{8,}\d")),
+    ("email", re.compile(rf"{_EMAIL_LABEL}@{_EMAIL_DOMAIN}", re.I)),
+    ("phone", _PHONE_RE),
     ("ssn", re.compile(r"\b\d{3}-\d{2}-\d{4}\b")),
     ("credit_card", re.compile(r"\b(?:\d[ -]*?){13,19}\b")),
     ("ipv4", re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")),
-    ("iban", re.compile(r"\b[A-Z]{2}\d{2}[A-Z0-9]{10,30}\b")),
+    # IBAN total length is 15-34 chars: 2 letters + 2 check digits + 11-30 BBAN.
+    ("iban", re.compile(r"\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b")),
     ("passport", re.compile(r"\b[A-Z]{1,2}\d{6,9}\b")),
 ]
+
+# A plausible phone number has 7-15 digits total (ITU E.164 caps at 15).
+_PHONE_MIN_DIGITS = 7
+_PHONE_MAX_DIGITS = 15
 
 
 @dataclass(slots=True)
@@ -46,6 +65,10 @@ class PiiClassifier:
             for m in pattern.finditer(text):
                 if kind == "credit_card" and not _luhn(m.group()):
                     continue
+                if kind == "phone":
+                    n_digits = sum(c.isdigit() for c in m.group())
+                    if not _PHONE_MIN_DIGITS <= n_digits <= _PHONE_MAX_DIGITS:
+                        continue
                 hits.append(PiiHit(kind=kind, value=m.group(), start=m.start(), end=m.end()))
         return hits
 

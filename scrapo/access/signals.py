@@ -8,8 +8,22 @@ from scrapo.types import FetchResult
 
 _TAG_RE = re.compile(r"<[^>]+>")
 _SCRIPT_RE = re.compile(r"<script[\s>]", re.I)
+# Pre-compiled once (FIX 4): script/style stripping used by _visible_text_len on
+# every call. Recompiling per call was pure overhead.
+_SCRIPT_STYLE_RE = re.compile(r"<(script|style)\b[^>]*>.*?</\1>", re.I | re.S)
 _SPA_ROOT_RE = re.compile(
-    r'id=["\'](root|app|__next|__nuxt|svelte|q-app)["\']|data-reactroot|ng-app', re.I
+    # Classic roots plus modern-framework markers (FIX 2): Next/Nuxt/Svelte/Qwik,
+    # Gatsby (#___gatsby), Astro (<astro-island>/<astro-*>), Remix
+    # (__remixContext/__remixManifest), Qwik (q:container/data-qwik), and Vite /
+    # ESM bundle shells (/@vite/ client, <script type="module" src=...>).
+    r'id=["\'](root|app|__next|__nuxt|svelte|q-app|___gatsby)["\']'
+    r"|data-reactroot|ng-app"
+    r"|astro-island|<astro-"
+    r"|__remixContext|__remixManifest"
+    r"|q:container|data-qwik"
+    r"|/@vite/"
+    r'|<script[^>]+type=["\']module["\'][^>]*\ssrc=',
+    re.I,
 )
 
 _BLOCK_PATTERNS: list[tuple[re.Pattern[str], str]] = [
@@ -22,6 +36,18 @@ _BLOCK_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"access denied|you have been blocked|blocked by", re.I), "generic-block"),
     (re.compile(r"hCaptcha|recaptcha", re.I), "captcha"),
     (re.compile(r"are you a human|prove you are not a robot", re.I), "human-check"),
+]
+
+# FIX 1: modern challenges embed opaque iframes/scripts from known vendor CDNs
+# without ever spelling the vendor name in visible text. Match on the script/iframe
+# src host substrings (case-insensitive). Checked against the same 8 KB sample.
+_BLOCK_SRC_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"challenges\.cloudflare\.com", re.I), "cloudflare"),
+    (re.compile(r"js\.hcaptcha\.com|hcaptcha\.com/captcha", re.I), "captcha"),
+    (re.compile(r"www\.google\.com/recaptcha|recaptcha\.net", re.I), "captcha"),
+    (re.compile(r"(?:[\w.-]+\.)?arkoselabs\.com|funcaptcha|client-api\.arkoselabs", re.I), "captcha"),
+    (re.compile(r"geo\.captcha-delivery\.com|datadome", re.I), "datadome"),
+    (re.compile(r"captcha\.px-cdn|px-captcha|perimeterx", re.I), "perimeterx"),
 ]
 
 
@@ -43,20 +69,28 @@ def detect_block(html: str, status: int, *, has_body: bool = True) -> tuple[bool
     for pattern, label in _BLOCK_PATTERNS:
         if pattern.search(sample):
             return True, label
+    for pattern, label in _BLOCK_SRC_PATTERNS:
+        if pattern.search(sample):
+            return True, label
     return False, None
 
 
-def is_thin(html: str, min_chars: int = 200) -> bool:
-    """Body too small to plausibly contain meaningful content."""
-    return len(html.strip()) < min_chars
+def is_thin(html: str, min_chars: int = 120) -> bool:
+    """Body too small to plausibly contain meaningful content.
+
+    Measures *visible* text (scripts/styles/tags stripped) rather than raw HTML
+    length, so a page that is mostly markup/boilerplate cruft is still "thin",
+    and a legit short page full of tags is not falsely flagged.
+    """
+    return _visible_text_len(html) < min_chars
 
 
 def _visible_text_len(html: str) -> int:
-    no_scripts = re.sub(r"<(script|style)\b[^>]*>.*?</\1>", " ", html, flags=re.I | re.S)
+    no_scripts = _SCRIPT_STYLE_RE.sub(" ", html)
     return len(" ".join(_TAG_RE.sub(" ", no_scripts).split()))
 
 
-def is_spa_shell(html: str, *, min_html: int = 1500, max_visible: int = 220) -> bool:
+def is_spa_shell(html: str, *, min_html: int = 700, max_visible: int = 220) -> bool:
     """Heuristic: lots of markup and script, almost no rendered text yet.
 
     Catches the classic single-page-app shell (an empty ``<div id="root">`` plus

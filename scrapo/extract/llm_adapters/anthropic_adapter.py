@@ -77,7 +77,13 @@ class AnthropicAdapter:
 
         in_tok = getattr(resp.usage, "input_tokens", 0) or 0
         out_tok = getattr(resp.usage, "output_tokens", 0) or 0
-        cost = self._cost(in_tok, out_tok)
+        # Prompt-cache tokens are billed at non-standard multiples of the input
+        # rate: cache WRITES at ~1.25x input, cache READS at ~0.1x input. The
+        # schema block carries cache_control=ephemeral, so on repeat extractions
+        # these dominate and ignoring them under-reports cost.
+        cache_creation_tok = getattr(resp.usage, "cache_creation_input_tokens", 0) or 0
+        cache_read_tok = getattr(resp.usage, "cache_read_input_tokens", 0) or 0
+        cost = self._cost(in_tok, out_tok, cache_creation_tok, cache_read_tok)
         return LLMResponse(
             text=text,
             json_payload=json_payload,
@@ -88,12 +94,24 @@ class AnthropicAdapter:
             cost_usd=cost,
         )
 
-    def _cost(self, in_tok: int, out_tok: int) -> float:
+    def _cost(
+        self,
+        in_tok: int,
+        out_tok: int,
+        cache_creation_tok: int = 0,
+        cache_read_tok: int = 0,
+    ) -> float:
         prices = _PRICING_USD_PER_MTOK.get(self.model_id)
         if not prices:
             return 0.0
         in_price, out_price = prices
-        return (in_tok / 1_000_000.0) * in_price + (out_tok / 1_000_000.0) * out_price
+        return (
+            (in_tok / 1_000_000.0) * in_price
+            + (out_tok / 1_000_000.0) * out_price
+            # cache writes ~1.25x input rate, cache reads ~0.10x input rate
+            + (cache_creation_tok / 1_000_000.0) * in_price * 1.25
+            + (cache_read_tok / 1_000_000.0) * in_price * 0.10
+        )
 
 
 def _strip_fences(text: str) -> str:

@@ -16,9 +16,14 @@ from typing import Any
 import structlog
 from pydantic import BaseModel
 
+from scrapo.access.actions import Action, coerce_actions
 from scrapo.access.adapters.base import ProxyAdapter
 from scrapo.access.router import TierRouter
 from scrapo.config import Config, get_config
+from scrapo.crawl.batch import BatchItem
+from scrapo.crawl.batch import batch_scrape as _batch_core
+from scrapo.crawl.batch import batch_scrape_stream as _batch_stream_core
+from scrapo.crawl.mapper import map_site as _map_core
 from scrapo.extract.hybrid import HybridExtractor
 from scrapo.extract.llm_adapters.base import LLMAdapter
 from scrapo.extract.pinning import PinnedModel
@@ -60,7 +65,12 @@ async def scrape(
     screenshot: bool = False,
     storage_state: str | None = None,
     force_tier: Tier | None = None,
+    actions: list[Action | dict[str, Any]] | None = None,
+    main_content: bool | None = None,
     router: TierRouter | None = None,
+    selector_cache: SelectorCache | None = None,
+    replay: ReplayStore | None = None,
+    audit: AuditLog | None = None,
 ) -> ScrapeResult:
     """Single-URL scrape.
 
@@ -68,11 +78,22 @@ async def scrape(
     markdown, chunks (with provenance), and (when ``schema`` is given) typed
     extraction. Pass ``router`` to reuse one :class:`TierRouter` (and its browser
     pool) across many calls; otherwise a fresh one is created and torn down here.
+
+    ``selector_cache``, ``replay`` and ``audit`` may be injected so a caller (e.g.
+    :func:`crawl`) can share one instance of each across many pages instead of
+    rebuilding them — and re-running their schema setup — on every call. When not
+    provided they are constructed here as before.
     """
     cfg = config or get_config()
+    coerced_actions = coerce_actions(actions) if actions else None
+    if coerced_actions:
+        # Interact actions need a live browser session; route straight to the
+        # agent tier (this also disables the conditional-GET fast path below).
+        force_tier = force_tier or Tier.AGENT
+    use_main_content = cfg.main_content if main_content is None else main_content
     record = RunRecord.new(url)
-    audit = AuditLog(cfg.audit_log, enabled=cfg.audit_enabled)
-    replay = ReplayStore(cfg)
+    audit = audit or AuditLog(cfg.audit_log, enabled=cfg.audit_enabled)
+    replay = replay or ReplayStore(cfg)
 
     def _blocked(*, url_: str, status: int | None, tier: str | None, reason: str) -> ScrapeResult:
         return ScrapeResult(
@@ -132,6 +153,7 @@ async def scrape(
             screenshot=screenshot,
             storage_state=storage_state,
             force_tier=force_tier,
+            actions=coerced_actions,
             conditional=conditional,
         )
         if fetch.not_modified:
@@ -160,6 +182,7 @@ async def scrape(
                     screenshot=screenshot,
                     storage_state=storage_state,
                     force_tier=force_tier,
+                    actions=coerced_actions,
                 )
     finally:
         if own_router:
@@ -193,11 +216,11 @@ async def scrape(
             url_=fetch.final_url, status=fetch.status, tier=fetch.tier_used.label, reason=record.error
         )
 
-    document = shape_fetch(fetch, url)
+    document = shape_fetch(fetch, url, main_content=use_main_content)
 
     extraction: ExtractionResult | None = None
     if schema is not None:
-        cache = SelectorCache(cfg.selector_cache_db)
+        cache = selector_cache or SelectorCache(cfg.selector_cache_db)
         extractor = HybridExtractor(cache, llm=llm_adapter, pin=pin, strict_pin=strict_pin)
         extraction = await extractor.extract(
             url=url,
@@ -288,6 +311,11 @@ async def crawl(
 
     cfg = config or get_config()
     shared_router = TierRouter(cfg, proxy_adapter=proxy_adapter)
+    # Built once and shared across every page so their schema setup
+    # (CREATE TABLE IF NOT EXISTS / migrations) runs once, not per page.
+    shared_cache = SelectorCache(cfg.selector_cache_db)
+    shared_replay = ReplayStore(cfg)
+    shared_audit = AuditLog(cfg.audit_log, enabled=cfg.audit_enabled)
 
     async def _scrape(url: str, *, budget: Budget | None = None) -> ScrapeResult:
         return await scrape(
@@ -298,6 +326,9 @@ async def crawl(
             llm_adapter=llm_adapter,
             pin=pin,
             router=shared_router,
+            selector_cache=shared_cache,
+            replay=shared_replay,
+            audit=shared_audit,
         )
 
     scheduler = CrawlScheduler(cfg, scrape_fn=_scrape)
@@ -338,6 +369,10 @@ async def crawl_stream(
 
     cfg = config or get_config()
     shared_router = TierRouter(cfg, proxy_adapter=proxy_adapter)
+    # Built once and shared across every page (see crawl()).
+    shared_cache = SelectorCache(cfg.selector_cache_db)
+    shared_replay = ReplayStore(cfg)
+    shared_audit = AuditLog(cfg.audit_log, enabled=cfg.audit_enabled)
     # Bounded so a slow consumer back-pressures the scheduler. With unbounded
     # queueing, a long crawl with a slow downstream sink would buffer every
     # ScrapeResult (HTML, markdown, chunks, extraction) in memory before yield.
@@ -348,6 +383,7 @@ async def crawl_stream(
         return await scrape(
             url, schema=schema, config=cfg, budget=budget,
             llm_adapter=llm_adapter, pin=pin, router=shared_router,
+            selector_cache=shared_cache, replay=shared_replay, audit=shared_audit,
         )
 
     async def _emit(result: ScrapeResult) -> None:
@@ -383,6 +419,112 @@ async def crawl_stream(
             await shared_router.aclose()
         except Exception as exc:  # noqa: BLE001 - logged, then dropped on purpose
             log.warning("scrapo.crawl_stream.router_teardown_failed", err=str(exc))
+
+
+async def map_site(
+    seeds: list[str],
+    *,
+    config: Config | None = None,
+    max_urls: int = 5000,
+    max_depth: int = 2,
+    same_host_only: bool = True,
+    use_sitemap: bool = True,
+) -> list[str]:
+    """Discover the URLs on a site *without* scraping their content.
+
+    Merges each origin's ``sitemap.xml`` with a bounded same-host link crawl, then
+    returns a sorted, de-duplicated, SSRF-filtered URL list. Much cheaper than a
+    full crawl when you only need to know what's there.
+    """
+    return await _map_core(
+        seeds,
+        config=config or get_config(),
+        max_urls=max_urls,
+        max_depth=max_depth,
+        same_host_only=same_host_only,
+        use_sitemap=use_sitemap,
+    )
+
+
+async def batch_scrape(
+    urls: list[str],
+    *,
+    schema: type[BaseModel] | None = None,
+    config: Config | None = None,
+    budget: Budget | None = None,
+    proxy_adapter: ProxyAdapter | None = None,
+    llm_adapter: LLMAdapter | None = None,
+    pin: PinnedModel | None = None,
+    main_content: bool | None = None,
+    max_concurrency: int | None = None,
+    on_result: Callable[[BatchItem], Awaitable[None]] | None = None,
+) -> list[BatchItem]:
+    """Scrape an explicit list of URLs concurrently (not a recursive crawl).
+
+    Bounded concurrency, per-URL error isolation (one failure never aborts the
+    batch), results returned in input order. One browser pool and one set of
+    stores are shared across the whole batch.
+    """
+    cfg = config or get_config()
+    shared_router = TierRouter(cfg, proxy_adapter=proxy_adapter)
+    shared_cache = SelectorCache(cfg.selector_cache_db)
+    shared_replay = ReplayStore(cfg)
+    shared_audit = AuditLog(cfg.audit_log, enabled=cfg.audit_enabled)
+
+    async def _scrape(u: str) -> ScrapeResult:
+        return await scrape(
+            u, schema=schema, config=cfg, budget=budget, llm_adapter=llm_adapter,
+            pin=pin, main_content=main_content, router=shared_router,
+            selector_cache=shared_cache, replay=shared_replay, audit=shared_audit,
+        )
+
+    try:
+        return await _batch_core(
+            urls,
+            scrape_fn=_scrape,
+            max_concurrency=max_concurrency or cfg.max_concurrency,
+            on_result=on_result,
+        )
+    finally:
+        await shared_router.aclose()
+
+
+async def batch_scrape_stream(
+    urls: list[str],
+    *,
+    schema: type[BaseModel] | None = None,
+    config: Config | None = None,
+    budget: Budget | None = None,
+    proxy_adapter: ProxyAdapter | None = None,
+    llm_adapter: LLMAdapter | None = None,
+    pin: PinnedModel | None = None,
+    main_content: bool | None = None,
+    max_concurrency: int | None = None,
+) -> AsyncIterator[BatchItem]:
+    """Like :func:`batch_scrape`, but yields each :class:`BatchItem` as it completes."""
+    cfg = config or get_config()
+    shared_router = TierRouter(cfg, proxy_adapter=proxy_adapter)
+    shared_cache = SelectorCache(cfg.selector_cache_db)
+    shared_replay = ReplayStore(cfg)
+    shared_audit = AuditLog(cfg.audit_log, enabled=cfg.audit_enabled)
+
+    async def _scrape(u: str) -> ScrapeResult:
+        return await scrape(
+            u, schema=schema, config=cfg, budget=budget, llm_adapter=llm_adapter,
+            pin=pin, main_content=main_content, router=shared_router,
+            selector_cache=shared_cache, replay=shared_replay, audit=shared_audit,
+        )
+
+    try:
+        async for item in _batch_stream_core(
+            urls, scrape_fn=_scrape, max_concurrency=max_concurrency or cfg.max_concurrency
+        ):
+            yield item
+    finally:
+        try:
+            await shared_router.aclose()
+        except Exception as exc:  # noqa: BLE001 - logged, then dropped on purpose
+            log.warning("scrapo.batch_stream.router_teardown_failed", err=str(exc))
 
 
 def _prior_headers(prior: dict[str, Any]) -> dict[str, str]:

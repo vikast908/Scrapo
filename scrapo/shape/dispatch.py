@@ -30,8 +30,12 @@ _FEED_CTYPES = {"application/rss+xml", "application/atom+xml", "application/feed
 _XMLISH = {"application/xml", "text/xml"}
 
 
-def shape_fetch(fetch: Any, url: str) -> ChunkedDocument:
-    """Shape a FetchResult into a ChunkedDocument, dispatching on content type."""
+def shape_fetch(fetch: Any, url: str, *, main_content: bool = False) -> ChunkedDocument:
+    """Shape a FetchResult into a ChunkedDocument, dispatching on content type.
+
+    ``main_content`` only affects the HTML path: when set, boilerplate
+    (nav/sidebar/footer/ads) is stripped before markdown conversion.
+    """
     ctype = fetch.content_type
     body = fetch.html or ""
     raw = fetch.raw_content
@@ -46,7 +50,7 @@ def shape_fetch(fetch: Any, url: str) -> ChunkedDocument:
         return _shape_feed(body, url)
     if ctype == "text/plain":
         return _wrap_text(body, url, kind="text", title=None)
-    return shape_document(body, url)
+    return shape_document(body, url, main_content=main_content)
 
 
 def _one_chunk_doc(url: str, title: str | None, markdown: str, *, kind: str, data: Any = None) -> ChunkedDocument:
@@ -75,13 +79,25 @@ def _looks_json(body: str) -> bool:
     return s in ("{", "[")
 
 
+_JSON_MD_LIMIT = 60_000
+
+
 def _shape_json(body: str, url: str) -> ChunkedDocument:
     try:
         data = json.loads(body)
     except json.JSONDecodeError:
         return shape_document(body, url)
+    # ``data`` always carries the COMPLETE parsed structure; only the markdown
+    # rendering is size-limited, and it says so when it truncates.
     pretty = json.dumps(data, indent=2, ensure_ascii=False)
-    md = f"```json\n{pretty[:60_000]}\n```"
+    if len(pretty) > _JSON_MD_LIMIT:
+        md = (
+            f"```json\n{pretty[:_JSON_MD_LIMIT]}\n```\n\n"
+            f"_(JSON rendering truncated to {_JSON_MD_LIMIT} of {len(pretty)} "
+            f"characters; the full parsed object is available on `result.data`.)_"
+        )
+    else:
+        md = f"```json\n{pretty}\n```"
     return _one_chunk_doc(url, None, md, kind="json", data=data)
 
 

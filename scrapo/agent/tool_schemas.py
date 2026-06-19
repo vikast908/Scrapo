@@ -57,6 +57,55 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "scrapo_map",
+        "description": "Discover the URLs on a site WITHOUT scraping their content. Merges "
+        "each origin's sitemap.xml with a bounded same-host link crawl; returns a sorted, "
+        "de-duplicated, SSRF-filtered URL list. Use this to see what's on a site before crawling.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "seeds": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 1,
+                    "maxItems": 20,
+                },
+                "max_depth": {"type": "integer", "minimum": 0, "maximum": 5, "default": 2},
+                "max_urls": {"type": "integer", "minimum": 1, "maximum": 5000, "default": 1000},
+                "same_host_only": {"type": "boolean", "default": True},
+                "use_sitemap": {"type": "boolean", "default": True},
+            },
+            "required": ["seeds"],
+        },
+    },
+    {
+        "name": "scrapo_batch",
+        "description": "Scrape an explicit list of URLs concurrently (not a recursive crawl). "
+        "Per-URL error isolation; returns one result per input URL in order.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "urls": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 1,
+                    "maxItems": 100,
+                },
+                "max_tier": {
+                    "type": "integer",
+                    "description": "0=HTTP 1=HTTP+session 2=browser 3=stealth 4=agent",
+                    "default": 2,
+                },
+                "main_content": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Strip boilerplate (nav/sidebar/footer) before markdown",
+                },
+            },
+            "required": ["urls"],
+        },
+    },
+    {
         "name": "scrapo_replay",
         "description": "Re-run extraction over a previously archived run's HTML "
         "without re-fetching the live page.",

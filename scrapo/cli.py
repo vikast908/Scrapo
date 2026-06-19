@@ -12,7 +12,9 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from scrapo.api import batch_scrape as batch_api
 from scrapo.api import crawl as crawl_api
+from scrapo.api import map_site as map_api
 from scrapo.api import scrape as scrape_api
 from scrapo.config import Config, set_config
 from scrapo.logging import configure_logging
@@ -42,6 +44,7 @@ def scrape(
     max_tier: Annotated[int, typer.Option(help="0=HTTP 1=HTTP+session 2=browser 3=stealth 4=agent")] = 2,
     wait_for: Annotated[str | None, typer.Option(help="CSS selector to wait for (browser tier)")] = None,
     screenshot: Annotated[bool, typer.Option(help="Capture screenshot (browser tier)")] = False,
+    main_content: Annotated[bool, typer.Option(help="Strip boilerplate (nav/sidebar/footer) before markdown")] = False,
     diff_last: Annotated[bool, typer.Option(help="Diff against the previous recorded run of this URL")] = False,
     data_dir: Annotated[Path | None, typer.Option(help="Override data dir")] = None,
     out_md: Annotated[Path | None, typer.Option(help="Write markdown to this file")] = None,
@@ -50,7 +53,12 @@ def scrape(
     """Fetch one URL and print clean markdown."""
     cfg = _load_config(data_dir)
     budget = Budget(max_tier=Tier(max_tier))
-    result = asyncio.run(scrape_api(url, budget=budget, wait_for=wait_for, screenshot=screenshot))
+    result = asyncio.run(
+        scrape_api(
+            url, budget=budget, wait_for=wait_for, screenshot=screenshot,
+            main_content=main_content,
+        )
+    )
     if result.get("blocked"):
         console.print(f"[red]blocked:[/red] {result.get('block_reason')}")
         raise typer.Exit(code=2)
@@ -99,6 +107,61 @@ def crawl(
     for status, count in result["stats"].items():
         table.add_row(status, str(count))
     console.print(table)
+
+
+@app.command(name="map")
+def map_cmd(
+    seed: Annotated[list[str], typer.Argument(help="One or more seed URLs")],
+    max_depth: Annotated[int, typer.Option(help="Link-discovery depth")] = 2,
+    max_urls: Annotated[int, typer.Option(help="Cap on discovered URLs")] = 5000,
+    same_host: Annotated[bool, typer.Option(help="Restrict to seed hosts")] = True,
+    use_sitemap: Annotated[bool, typer.Option(help="Merge each origin's sitemap.xml")] = True,
+    out: Annotated[Path | None, typer.Option(help="Write the URL list to this file")] = None,
+    data_dir: Annotated[Path | None, typer.Option(help="Override data dir")] = None,
+) -> None:
+    """Discover a site's URLs without scraping their content."""
+    _load_config(data_dir)
+    urls = asyncio.run(
+        map_api(
+            seed, max_depth=max_depth, max_urls=max_urls,
+            same_host_only=same_host, use_sitemap=use_sitemap,
+        )
+    )
+    console.print(f"[green]{len(urls)} URLs[/green]")
+    if out:
+        out.write_text("\n".join(urls), encoding="utf-8")
+    else:
+        for u in urls:
+            console.print(u)
+
+
+@app.command()
+def batch(
+    url: Annotated[list[str], typer.Argument(help="URLs to scrape")],
+    max_tier: Annotated[int, typer.Option(help="Tier ceiling")] = 2,
+    concurrency: Annotated[int | None, typer.Option(help="Max concurrent scrapes")] = None,
+    main_content: Annotated[bool, typer.Option(help="Strip boilerplate before markdown")] = False,
+    data_dir: Annotated[Path | None, typer.Option(help="Override data dir")] = None,
+) -> None:
+    """Scrape an explicit list of URLs concurrently (not a recursive crawl)."""
+    _load_config(data_dir)
+    budget = Budget(max_tier=Tier(max_tier))
+    items = asyncio.run(
+        batch_api(url, budget=budget, max_concurrency=concurrency, main_content=main_content)
+    )
+    table = Table("url", "status", "tier", "chunks", "error")
+    for it in items:
+        r = it.result
+        table.add_row(
+            it.url[:50],
+            str(r["status"]) if r else "-",
+            (r["tier_used"] or "-") if r else "-",
+            str(len(r["chunks"])) if r else "-",
+            (it.error or ("blocked" if r and r.get("blocked") else ""))[:30],
+        )
+    console.print(table)
+    ok = sum(1 for it in items if it.result and not it.result.get("blocked"))
+    console.print(f"[green]{ok}/{len(items)} ok[/green]")
 
 
 @app.command(name="list")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from urllib.parse import urldefrag, urlsplit, urlunsplit
 
@@ -33,13 +34,18 @@ def normalize_url(url: str) -> str:
 class UrlDeduper:
     def __init__(self) -> None:
         self._seen: set[str] = set()
+        # Guards the check-then-set on ``_seen`` so concurrent crawl workers
+        # can't both observe the same URL as unseen and both enqueue it.
+        self._lock = asyncio.Lock()
 
-    def add(self, url: str) -> bool:
+    async def add(self, url: str) -> bool:
+        """Atomically mark ``url`` as seen; return True only for the first caller."""
         norm = normalize_url(url)
-        if norm in self._seen:
-            return False
-        self._seen.add(norm)
-        return True
+        async with self._lock:
+            if norm in self._seen:
+                return False
+            self._seen.add(norm)
+            return True
 
     def __contains__(self, url: str) -> bool:
         return normalize_url(url) in self._seen

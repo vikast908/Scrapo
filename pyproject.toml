@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "scrapo"
-version = "0.7.0"
+version = "0.8.0"
 description = "AI-native, agent-first web scraping library with deterministic replay"
 readme = "README.md"
 requires-python = ">=3.11"

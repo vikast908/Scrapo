@@ -6,6 +6,123 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.8.0] - 2026-06-19
+
+Capability + correctness release: main-content extraction, site mapping,
+explicit-list batch scraping, and deterministic browser actions land as new
+features, alongside a sweep that makes the cost/budget caps real, closes a
+redirect-based SSRF, and removes blocking I/O from the event loop. No breaking
+changes to the public API.
+
+### Added
+
+- **Main-content extraction** (`scrapo/shape/readability.py`): a
+  readability/trafilatura-style boilerplate pass strips navigation, sidebars,
+  footers, and ads and keeps just the article body before the Markdown
+  conversion runs, producing much cleaner LLM/RAG-ready Markdown. Opt-in and off
+  by default: `Config(main_content=True)`, `SCRAPO_MAIN_CONTENT=1`, or
+  `scrape(url, main_content=True)`.
+- **`map_site()`** (`scrapo/crawl/mapper.py`): discover a site's URLs *without*
+  scraping their content. It merges each origin's `sitemap.xml` with a bounded
+  same-host link crawl and returns a sorted, de-duplicated, SSRF-filtered URL
+  list. Exposed as `scrapo.map_site(...)`, the `scrapo map` CLI command, and the
+  `scrapo_map` MCP tool.
+- **Batch scrape**: `scrapo.batch_scrape(urls, ...)` and
+  `scrapo.batch_scrape_stream(urls, ...)` scrape an explicit list of URLs
+  concurrently (not a recursive crawl) with bounded concurrency, per-URL error
+  isolation, and results returned in input order. The batch shares a single
+  browser pool and store across all URLs. Each item comes back as
+  `BatchItem(url, result, error)`. Exposed as the `scrapo batch` CLI command and
+  the `scrapo_batch` MCP tool.
+- **Interact actions**: `scrape(url, actions=[...])` runs deterministic browser
+  steps with no LLM involved — action types `goto`, `click`, `type`, `fill`,
+  `press`, `scroll`, `wait`, `wait_for_selector`, and `screenshot`
+  (`scrapo/access/actions.py`, the `Action` type plus `coerce_actions`). `goto`
+  targets are validated by the SSRF guard. Works even when no agent driver is
+  configured.
+- New exports from `scrapo`: `Action`, `BatchItem`, `batch_scrape`,
+  `batch_scrape_stream`, `map_site`.
+- **`Budget` cost and call caps are now enforced.** `Budget` tracks cumulative
+  `spent_usd` / `llm_calls_made`, and the hybrid extractor records each call and
+  refuses to call the LLM once `max_cost_usd` or `max_llm_calls` is hit. Caps are
+  enforced across crawls and batches that share one `Budget`. Previously
+  `max_cost_usd` was never referenced and `max_llm_calls` was checked against a
+  hardcoded `0` — both were effectively dead code.
+
+### Changed
+
+- **Anthropic cost accounting now includes prompt-cache tokens**:
+  `cache_creation_input_tokens` is billed at ~1.25× and `cache_read_input_tokens`
+  at ~0.1×. These were previously ignored, undercounting cost by 2–3× on cached
+  schemas.
+- **The OpenAI and Gemini adapters now compute `cost_usd`** from per-model
+  pricing tables; both previously always reported `0.0`.
+- **Replay snapshot comparison is hash-based** and no longer loads two full
+  blobs just to compare them with `==`. Snapshot gzip level was lowered to 4.
+
+### Fixed
+
+- **Selector cache is now keyed by `(host, path_template, schema_hash,
+  field_name)`** instead of `(host, schema_hash, …)`, so heterogeneous page
+  templates on a single host no longer thrash and evict each other's selectors
+  (which had caused repeated, avoidable LLM fallback). Includes a safe SQLite
+  schema migration for existing caches.
+- **SQLite connection pooling** (`scrapo/_db.py`): a per-path connection pool
+  applies PRAGMAs once per connection, replacing the previous open-PRAGMA-close
+  cycle on every operation (thousands of wasted thread spawns per crawl).
+  Per-connection state (row factory, open transactions) is reset on check-in.
+- **HTTP client reuse**: `HttpTier` caches one `httpx.AsyncClient` per proxy
+  instead of constructing a fresh client per fetch, keeping TLS sessions and
+  connections alive across pages.
+- **Blocking I/O moved off the event loop** via `asyncio.to_thread`: snapshot
+  gzip + write, screenshot write, audit-log read/write, and sitemap XML parsing
+  no longer stall concurrent workers.
+- **Provenance byte offsets are byte-exact on non-ASCII content**: a strip /
+  `byte_end` mismatch is fixed so `md_bytes[start:end]` decodes to the chunk's
+  exact source span even with accents, CJK, or emoji. Markdown inline conversion
+  gained a recursion-depth guard.
+- **Crawl correctness**: the dedup `add()` is guarded by an `asyncio.Lock`
+  (concurrent workers could otherwise both enqueue the same URL); a failing
+  `on_page` callback is isolated so it can't trigger a page re-fetch / double
+  count; queue `complete()` / `fail()` now take the queue lock like `claim()`;
+  `same_host_only` treats `www.example.com` and `example.com` as the same host;
+  and the per-page `SelectorCache` / `ReplayStore` / `AuditLog` are built once
+  and shared across a crawl or batch.
+- **Replay robustness**: `S3SnapshotStore.get` narrows its exception handling so
+  it no longer swallows auth/network errors as "not found".
+- **Anti-bot detection reach**: iframe/CDN challenge detection now covers
+  Cloudflare Turnstile, hCaptcha, reCAPTCHA, Arkose/FunCaptcha, DataDome, and
+  PerimeterX in addition to body-text patterns; modern SPA-shell detection now
+  recognises Astro, Remix, Qwik, Gatsby, and Vite/ESM bundles with a lower size
+  threshold; and `is_thin` measures visible text rather than raw HTML length.
+- **PII regexes tightened**: email requires an alphabetic TLD and rejects
+  consecutive dots; phone requires a plausible 7–15 digit count and structure;
+  IBAN length is bounded to the valid 15–34 range.
+- **Action cache**: `record_failure` computes and returns the post-increment
+  count in a single connection via `UPDATE … RETURNING`, closing a
+  read-after-write race that could miss an eviction; the agent driver's prompt is
+  now versioned so a changed prompt naturally misses stale recordings.
+
+### Security
+
+- **Redirect-based SSRF closed**: `check_url` validated only the initial URL
+  while the HTTP clients followed redirects, so an allowed host could `302` to
+  `169.254.169.254`, loopback, or an RFC 1918 address. A new
+  `security.safe_get` re-validates *every* redirect hop and is applied in the
+  HTTP tier, the `robots.txt` fetch, and the sitemap fetch. Sitemap-index
+  `<loc>` entries are also validated, since they are attacker-influenceable.
+- **MCP server hardened**: every tool handler is wrapped to return a clean
+  `{"error": …}` payload instead of crashing, and oversized results are
+  truncated to *valid* JSON (large fields trimmed plus a `"truncated": true`
+  marker) instead of being sliced mid-string into invalid JSON.
+
+### Notes
+
+- The offline test suite grew from 196 to 280 fully-offline tests (no network,
+  no paid LLM), and the codebase stays `ruff` and `mypy --strict` clean.
+
+## [0.7.1] - 2026-06-19
+
 Hardening pass: a broad robustness review fixed real edge cases across the
 SSRF guard, replay store, snapshot atomicity, content shaping, concurrency
 control, and the agent driver. No breaking changes to the public API.
@@ -250,7 +367,11 @@ Initial public release.
 - The `robots.txt` gate is opt-in: set `SCRAPO_RESPECT_ROBOTS=1` (or `Config(respect_robots=True)`) to enable it. You are responsible for complying with each site's terms of use and applicable law.
 - Alpha status: the public API and core subsystems are stable, but the T4 agent driver, full action caching, an S3 snapshot adapter, and a hosted control plane are intentionally lightweight or not yet implemented.
 
-[Unreleased]: https://github.com/vikast908/Scrapo/compare/v0.4.0...HEAD
+[0.8.0]: https://github.com/vikast908/Scrapo/compare/v0.7.1...v0.8.0
+[0.7.1]: https://github.com/vikast908/Scrapo/compare/v0.7.0...v0.7.1
+[0.7.0]: https://github.com/vikast908/Scrapo/compare/v0.6.0...v0.7.0
+[0.6.0]: https://github.com/vikast908/Scrapo/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/vikast908/Scrapo/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/vikast908/Scrapo/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/vikast908/Scrapo/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/vikast908/Scrapo/compare/v0.1.0...v0.2.0

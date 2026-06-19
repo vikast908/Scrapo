@@ -3,6 +3,12 @@
 Splits along the heading hierarchy, falling back to paragraph splits when a
 single section exceeds the target token budget. Each chunk records its
 heading_trail so downstream LLMs and search indexes know its document context.
+
+All byte offsets are exact indices into ``md.encode("utf-8")``: for every
+emitted chunk, ``md.encode("utf-8")[byte_start:byte_end]`` decodes to the
+chunk's own source span (the chunk text minus any overlap prepended for LLM
+context). Offsets are tracked in the byte domain end-to-end, so multi-byte
+characters (accents, CJK, emoji) do not corrupt provenance ranges.
 """
 
 from __future__ import annotations
@@ -26,6 +32,26 @@ class RawChunk:
         return hashlib.sha256(self.text.encode("utf-8", errors="replace")).hexdigest()
 
 
+def _strip_span(s: str, base: int) -> tuple[str, int, int]:
+    """Strip leading/trailing whitespace from ``s`` and return the stripped
+    text together with byte offsets ``(text, byte_start, byte_end)`` relative to
+    a substring that begins at UTF-8 byte offset ``base``.
+
+    The byte offsets are exact even when the stripped whitespace (or ``s``
+    itself) contains multi-byte characters, because the lengths of the removed
+    leading/trailing fragments are measured in UTF-8 bytes rather than in
+    characters.
+    """
+    stripped = s.strip()
+    if not stripped:
+        return "", base, base
+    lead = s[: len(s) - len(s.lstrip())]
+    lead_bytes = len(lead.encode("utf-8"))
+    body_bytes = len(stripped.encode("utf-8"))
+    start = base + lead_bytes
+    return stripped, start, start + body_bytes
+
+
 def chunk_markdown(
     md: str,
     *,
@@ -38,24 +64,32 @@ def chunk_markdown(
     chunks: list[RawChunk] = []
     for section_text, trail, start_byte in sections:
         if len(section_text) <= target_chars:
+            text, b_start, b_end = _strip_span(section_text, start_byte)
             chunks.append(
                 RawChunk(
-                    text=section_text.strip(),
+                    text=text,
                     heading_trail=list(trail),
-                    byte_start=start_byte,
-                    byte_end=start_byte + len(section_text.encode("utf-8")),
+                    byte_start=b_start,
+                    byte_end=b_end,
                 )
             )
             continue
         for piece, p_start, p_end in _split_paragraphs(
             section_text, target_chars, overlap_chars
         ):
+            # ``p_start``/``p_end`` are byte offsets into ``section_text`` and
+            # already point at the chunk's own (non-overlap) source span. Shift
+            # them into the document's byte space and trim whitespace exactly.
+            local = section_text.encode("utf-8")[p_start:p_end].decode("utf-8")
+            text, b_start, b_end = _strip_span(local, start_byte + p_start)
+            # ``piece`` may carry a prepended overlap tail; keep that as the
+            # chunk text while the byte range stays on the own-source span.
             chunks.append(
                 RawChunk(
                     text=piece.strip(),
                     heading_trail=list(trail),
-                    byte_start=start_byte + p_start,
-                    byte_end=start_byte + p_end,
+                    byte_start=b_start,
+                    byte_end=b_end,
                 )
             )
     return [c for c in chunks if c.text]
@@ -69,14 +103,14 @@ def _split_by_heading(md: str) -> list[tuple[str, list[str], int]]:
     cur_start_byte = 0
     seen_bytes = 0
 
-    def flush(byte_at: int) -> None:
+    def flush() -> None:
         if cur_lines:
             sections.append(("".join(cur_lines), list(cur_trail), cur_start_byte))
 
     for line in lines:
         m = _HEADING_RE.match(line)
         if m:
-            flush(seen_bytes)
+            flush()
             level = len(m.group(1))
             title = m.group(2).strip()
             cur_trail = cur_trail[: level - 1] + [title]
@@ -85,28 +119,32 @@ def _split_by_heading(md: str) -> list[tuple[str, list[str], int]]:
         else:
             cur_lines.append(line)
         seen_bytes += len(line.encode("utf-8"))
-    flush(seen_bytes)
+    flush()
     return sections
 
 
 def _split_paragraphs(
     text: str, target_chars: int, overlap_chars: int
 ) -> list[tuple[str, int, int]]:
-    """Return ``(piece, byte_start, byte_end)`` triples whose offsets index into
-    ``text.encode("utf-8")``. The caller adds these to the section's own UTF-8
-    byte_start, so any mismatch silently corrupts every provenance range that
-    contains a non-ASCII character.
+    """Return ``(piece, byte_start, byte_end)`` triples whose offsets are EXACT
+    UTF-8 byte indices into ``text.encode("utf-8")``.
+
+    Offsets are tracked in the byte domain: a running byte cursor advances over
+    each paragraph by ``len(para.encode("utf-8"))`` and over each ``"\\n\\n"``
+    separator by its 2-byte length, so any multi-byte character is accounted for
+    precisely. The caller adds these to the section's own UTF-8 byte_start; both
+    bases are byte-accurate, so the composition is exact.
 
     Each emitted chunk's byte range maps to the actual paragraphs that produced
-    it; the optional ``overlap_chars`` tail is prepended to the *next* chunk's
-    text purely as LLM context — it doesn't extend the byte range backwards (a
-    mid-paragraph tail would need a sub-paragraph byte index we don't track).
+    it. The optional ``overlap_chars`` tail is prepended to the *next* chunk's
+    ``piece`` purely as LLM context — it does NOT extend the byte range backwards
+    (the range always points at the chunk's own source span).
     """
     sep = "\n\n"
     sep_bytes = len(sep.encode("utf-8"))
     paragraphs = text.split(sep)
 
-    # Pre-compute byte offsets of each paragraph within ``text``.
+    # Byte offset of each paragraph within ``text`` via a running byte cursor.
     para_byte_start: list[int] = []
     para_byte_len: list[int] = []
     cursor = 0

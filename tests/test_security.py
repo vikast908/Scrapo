@@ -1,6 +1,8 @@
+import httpx
 import pytest
+import respx
 
-from scrapo.security import SsrfError, check_url, is_url_allowed
+from scrapo.security import SsrfError, check_url, is_url_allowed, safe_get
 
 
 @pytest.mark.parametrize(
@@ -64,3 +66,41 @@ def test_obfuscated_ip_encodings_are_blocked(url):
 def test_obfuscated_public_ip_still_allowed():
     # 8.8.8.8 in decimal — must still be allowed when not loopback/private.
     assert is_url_allowed("http://134744072/")
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_safe_get_blocks_redirect_to_private():
+    respx.get("https://ok.example.com/").mock(
+        return_value=httpx.Response(302, headers={"Location": "http://169.254.169.254/"})
+    )
+    final = respx.get("http://169.254.169.254/").mock(return_value=httpx.Response(200))
+    async with httpx.AsyncClient(follow_redirects=False) as client:
+        with pytest.raises(SsrfError):
+            await safe_get(client, "https://ok.example.com/", allow_private=False)
+    assert not final.called  # dangerous hop never issued
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_safe_get_follows_public_redirect():
+    respx.get("https://ok.example.com/").mock(
+        return_value=httpx.Response(302, headers={"Location": "https://dest.example.com/p"})
+    )
+    respx.get("https://dest.example.com/p").mock(return_value=httpx.Response(200, text="hi"))
+    async with httpx.AsyncClient(follow_redirects=False) as client:
+        resp = await safe_get(client, "https://ok.example.com/", allow_private=False)
+    assert resp.status_code == 200
+    assert resp.text == "hi"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_safe_get_caps_redirect_count():
+    # A loop of public redirects must eventually be cut off by max_redirects.
+    respx.get("https://loop.example.com/").mock(
+        return_value=httpx.Response(302, headers={"Location": "https://loop.example.com/"})
+    )
+    async with httpx.AsyncClient(follow_redirects=False) as client:
+        with pytest.raises(SsrfError):
+            await safe_get(client, "https://loop.example.com/", allow_private=False, max_redirects=3)

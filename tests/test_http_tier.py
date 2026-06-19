@@ -89,3 +89,85 @@ async def test_http_tier_empty_conditional_sends_no_validator_headers(cfg):
     await HttpTier(cfg).fetch("https://nc.example.com/", tier=Tier.HTTP, conditional=Conditional())
     assert "if-none-match" not in route.calls.last.request.headers
     assert "if-modified-since" not in route.calls.last.request.headers
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_http_tier_follows_safe_redirect(cfg):
+    # A public -> public redirect must still be followed and the body returned,
+    # with final_url reflecting the last hop.
+    respx.get("https://start.example.com/").mock(
+        return_value=httpx.Response(302, headers={"Location": "https://end.example.com/page"})
+    )
+    respx.get("https://end.example.com/page").mock(
+        return_value=httpx.Response(200, text="<html>landed</html>")
+    )
+    result = await HttpTier(cfg).fetch("https://start.example.com/", tier=Tier.HTTP)
+    assert result.status == 200
+    assert "landed" in result.html
+    assert result.final_url == "https://end.example.com/page"
+    assert not result.blocked
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_http_tier_blocks_redirect_to_metadata_endpoint(cfg):
+    # SSRF: an allowed public host 302-redirects to the cloud metadata IP.
+    # The guard must re-check the redirect target and refuse to follow it.
+    redirect = respx.get("https://evil.example.com/").mock(
+        return_value=httpx.Response(302, headers={"Location": "http://169.254.169.254/latest/meta-data/"})
+    )
+    metadata = respx.get("http://169.254.169.254/latest/meta-data/").mock(
+        return_value=httpx.Response(200, text="secrets")
+    )
+    result = await HttpTier(cfg).fetch("https://evil.example.com/", tier=Tier.HTTP)
+    assert result.blocked is True
+    assert result.block_reason.startswith("ssrf-redirect:")
+    assert "169.254.169.254" in result.block_reason
+    assert redirect.called
+    # The dangerous final hop must NEVER have been requested.
+    assert not metadata.called
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_http_tier_blocks_redirect_to_loopback(cfg):
+    redirect = respx.get("https://pub.example.com/").mock(
+        return_value=httpx.Response(301, headers={"Location": "http://127.0.0.1:6379/"})
+    )
+    internal = respx.get("http://127.0.0.1:6379/").mock(return_value=httpx.Response(200, text="redis"))
+    result = await HttpTier(cfg).fetch("https://pub.example.com/", tier=Tier.HTTP)
+    assert result.blocked is True
+    assert result.block_reason.startswith("ssrf-redirect:")
+    assert redirect.called
+    assert not internal.called
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_http_tier_allow_private_follows_redirect_to_loopback(tmp_path):
+    cfg = Config(data_dir=tmp_path / "scrapo", request_timeout=2.0, allow_private_hosts=True)
+    respx.get("https://pub.example.com/").mock(
+        return_value=httpx.Response(302, headers={"Location": "http://127.0.0.1:9000/x"})
+    )
+    respx.get("http://127.0.0.1:9000/x").mock(return_value=httpx.Response(200, text="<html>ok</html>"))
+    result = await HttpTier(cfg).fetch("https://pub.example.com/", tier=Tier.HTTP)
+    assert result.status == 200
+    assert result.final_url == "http://127.0.0.1:9000/x"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_http_tier_reuses_client_across_fetches(cfg):
+    respx.get("https://a.example.com/").mock(return_value=httpx.Response(200, text="<html>a</html>"))
+    respx.get("https://b.example.com/").mock(return_value=httpx.Response(200, text="<html>b</html>"))
+    tier = HttpTier(cfg)
+    await tier.fetch("https://a.example.com/", tier=Tier.HTTP)
+    await tier.fetch("https://b.example.com/", tier=Tier.HTTP)
+    # No proxy -> exactly one shared, still-open client reused across both fetches.
+    assert len(tier._clients) == 1
+    client = tier._clients[None]
+    assert client.is_closed is False
+    await tier.aclose()
+    assert client.is_closed is True
+    assert tier._clients == {}

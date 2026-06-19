@@ -1,7 +1,17 @@
 """Scrapo — AI-native, agent-first web scraping with deterministic replay."""
 
-from scrapo.api import crawl, crawl_stream, extract, scrape
+from scrapo.access.actions import Action
+from scrapo.api import (
+    batch_scrape,
+    batch_scrape_stream,
+    crawl,
+    crawl_stream,
+    extract,
+    map_site,
+    scrape,
+)
 from scrapo.config import Config
+from scrapo.crawl.batch import BatchItem
 from scrapo.results import ChunkView, CrawlResult, ExtractionView, ScrapeResult
 from scrapo.types import (
     Budget,
@@ -15,9 +25,11 @@ from scrapo.types import (
 )
 from scrapo.watch import ChangeSet, Watch, watch
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 __all__ = [
+    "Action",
+    "BatchItem",
     "Budget",
     "ChangeSet",
     "ChunkView",
@@ -33,9 +45,12 @@ __all__ = [
     "ScrapeResult",
     "Tier",
     "Watch",
+    "batch_scrape",
+    "batch_scrape_stream",
     "crawl",
     "crawl_stream",
     "extract",
+    "map_site",
     "scrape",
     "watch",
 ]

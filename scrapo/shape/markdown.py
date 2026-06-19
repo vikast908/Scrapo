@@ -34,6 +34,12 @@ _SKIP_CLASS_RE = re.compile(
     re.I,
 )
 
+# Maximum nesting depth for inline element recursion. Pathologically deep inline
+# markup (e.g. thousands of nested ``<b><i>...``) would otherwise risk hitting
+# Python's recursion limit; past this bound we fall back to flat text so the
+# converter degrades gracefully instead of raising ``RecursionError``.
+_INLINE_MAX_DEPTH = 200
+
 
 @dataclass(slots=True)
 class MarkdownDoc:
@@ -147,7 +153,11 @@ def _walk(node: Node, out: list[str], list_depth: int = 0) -> None:
         _walk(child, out, list_depth)
 
 
-def _inline(node: Node) -> str:
+def _inline(node: Node, depth: int = 0) -> str:
+    # Depth guard: beyond a sane nesting bound, stop recursing and fall back to
+    # the node's flat text so deeply nested inline markup can't blow the stack.
+    if depth >= _INLINE_MAX_DEPTH:
+        return _collapse_ws(node.text() or "")
     parts: list[str] = []
     for child in node.iter(include_text=True):
         if isinstance(child, str):
@@ -157,14 +167,14 @@ def _inline(node: Node) -> str:
         if tag == "-text":
             parts.append(child.text() or "")
         elif tag in {"strong", "b"}:
-            parts.append(f"**{_inline(child)}**")
+            parts.append(f"**{_inline(child, depth + 1)}**")
         elif tag in {"em", "i"}:
-            parts.append(f"*{_inline(child)}*")
+            parts.append(f"*{_inline(child, depth + 1)}*")
         elif tag in {"code"}:
             parts.append(f"`{child.text() or ''}`")
         elif tag == "a":
             href = (child.attributes.get("href") or "").strip() if child.attributes else ""
-            inner = _inline(child).strip()
+            inner = _inline(child, depth + 1).strip()
             if inner and href:
                 parts.append(f"[{inner}]({href})")
             else:
@@ -177,7 +187,7 @@ def _inline(node: Node) -> str:
             if src:
                 parts.append(f"![{alt}]({src})")
         else:
-            parts.append(_inline(child))
+            parts.append(_inline(child, depth + 1))
     return _collapse_ws(" ".join(p for p in parts if p))
 
 

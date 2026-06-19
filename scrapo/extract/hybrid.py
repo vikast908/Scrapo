@@ -115,11 +115,15 @@ class HybridExtractor:
                     "scrapo.extract.cache_miss_validation", url=url, schema=sv, failures=failures
                 )
 
-        if budget is not None and not budget.can_use_llm(0):
+        # Budget gate: both the call-count cap and the cost cap are checked here
+        # via can_use_llm() (which reads the budget's running counters). In a
+        # concurrent crawl one Budget is shared across workers, so this
+        # check-then-call has a small, bounded over-budget race — see Budget.
+        if budget is not None and not budget.can_use_llm():
             log.info("scrapo.extract.llm_budget_exhausted", url=url, schema=sv)
             return ExtractionResult(data=None, method="none", schema_version=sv)
 
-        return await self._llm_extract(url, html, markdown, model, sh, sv)
+        return await self._llm_extract(url, html, markdown, model, sh, sv, budget)
 
     async def _llm_extract(
         self,
@@ -129,6 +133,7 @@ class HybridExtractor:
         model: type[BaseModel],
         sh: str,
         sv: str,
+        budget: Budget | None = None,
     ) -> ExtractionResult:
         if self.pin and not matches(self.pin, self.llm.provider, self.llm.model_id, PROMPT_HASH):
             from scrapo.extract.pinning import PinViolation
@@ -146,6 +151,11 @@ class HybridExtractor:
                 + ", ".join(array_fields)
             )
         resp = await self.llm.extract_json(prompt, schema=json_schema)
+        # The call happened and incurred cost regardless of whether the payload
+        # validates, so account for it now (covers every return path below,
+        # including validation-failed responses).
+        if budget is not None:
+            budget.record_llm(resp.cost_usd)
 
         data_json: dict[str, Any] | None = None
         raw_selectors: dict[str, Any] = {}

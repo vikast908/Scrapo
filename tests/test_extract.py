@@ -158,6 +158,115 @@ async def test_extract_respects_llm_budget(cache):
     assert llm.calls == 0
 
 
+async def test_budget_max_llm_calls_blocks_second_call(cache):
+    from scrapo.types import Budget
+
+    class CostLLM:
+        provider = "x"
+        model_id = "x-1"
+
+        def __init__(self):
+            self.calls = 0
+
+        async def extract_json(self, prompt, *, schema=None, max_tokens=2048):
+            self.calls += 1
+            return LLMResponse(
+                text='{"name": "y"}',
+                json_payload={"name": "y"},
+                provider="x",
+                model_id="x-1",
+                cost_usd=0.001,
+            )
+
+    llm = CostLLM()
+    extractor = HybridExtractor(cache, llm=llm)
+    budget = Budget(max_llm_calls=1)
+
+    # First page (different template so no cache hit) uses the one allowed call.
+    first = await extractor.extract(
+        url="https://e.com/a/1", html="<html></html>", markdown="x", model=Product, budget=budget
+    )
+    assert first.method == "llm"
+    assert llm.calls == 1
+    assert budget.llm_calls_made == 1
+
+    # Second page must be blocked — budget exhausted, no further LLM call.
+    second = await extractor.extract(
+        url="https://e.com/b/2", html="<html></html>", markdown="x", model=Product, budget=budget
+    )
+    assert second.method == "none"
+    assert llm.calls == 1
+
+
+async def test_budget_max_cost_blocks_once_exceeded(cache):
+    from scrapo.types import Budget
+
+    class CostLLM:
+        provider = "x"
+        model_id = "x-1"
+
+        def __init__(self):
+            self.calls = 0
+
+        async def extract_json(self, prompt, *, schema=None, max_tokens=2048):
+            self.calls += 1
+            return LLMResponse(
+                text='{"name": "y"}',
+                json_payload={"name": "y"},
+                provider="x",
+                model_id="x-1",
+                cost_usd=0.01,
+            )
+
+    llm = CostLLM()
+    extractor = HybridExtractor(cache, llm=llm)
+    budget = Budget(max_cost_usd=0.005)
+
+    # First call is permitted (spent_usd starts at 0), then pushes spend over cap.
+    first = await extractor.extract(
+        url="https://e.com/a/1", html="<html></html>", markdown="x", model=Product, budget=budget
+    )
+    assert first.method == "llm"
+    assert llm.calls == 1
+    assert budget.spent_usd == 0.01
+
+    # Now over the cost cap — next call blocked.
+    second = await extractor.extract(
+        url="https://e.com/b/2", html="<html></html>", markdown="x", model=Product, budget=budget
+    )
+    assert second.method == "none"
+    assert llm.calls == 1
+
+
+async def test_different_templates_same_host_get_separate_cache_entries(cache):
+    sh = schema_hash(Product)
+    await cache.put(
+        "https://shop.example.com/product/12345/foo",
+        sh,
+        {"name": {"selector": "h1.product", "type": "css"}},
+    )
+    await cache.put(
+        "https://shop.example.com/category/widgets",
+        sh,
+        {"name": {"selector": "h1.category", "type": "css"}},
+    )
+
+    # Same template (different id) shares the product entry.
+    product_other = await cache.get("https://shop.example.com/product/67890/bar", sh)
+    assert product_other["name"]["selector"] == "h1.product"
+
+    # The category template has its own, distinct entry.
+    category = await cache.get("https://shop.example.com/category/widgets", sh)
+    assert category["name"]["selector"] == "h1.category"
+
+    # Evicting the product template must not touch the category entry.
+    await cache.invalidate("https://shop.example.com/product/99999/baz", sh)
+    assert await cache.get("https://shop.example.com/product/12345/foo", sh) == {}
+    assert (await cache.get("https://shop.example.com/category/widgets", sh))[
+        "name"
+    ]["selector"] == "h1.category"
+
+
 async def test_cost_propagates_from_llm_response(cache):
     class CostLLM:
         provider = "x"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from scrapo.shape.chunker import chunk_markdown
 from scrapo.shape.markdown import to_markdown
+from scrapo.shape.readability import extract_main_content
 from scrapo.types import Chunk, ChunkedDocument, ProvenanceTag
 
 
@@ -13,7 +14,10 @@ def shape_document(
     *,
     target_chars: int = 2400,
     overlap_chars: int = 100,
+    main_content: bool = False,
 ) -> ChunkedDocument:
+    if main_content:
+        html = extract_main_content(html)
     md = to_markdown(html)
     raw_chunks = chunk_markdown(md.markdown, target_chars=target_chars, overlap_chars=overlap_chars)
     chunks: list[Chunk] = []

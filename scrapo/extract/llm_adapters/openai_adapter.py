@@ -8,6 +8,17 @@ from typing import Any
 
 from scrapo.extract.llm_adapters.base import LLMResponse
 
+# USD per 1M tokens, (input, output). Published list prices.
+_PRICING_USD_PER_MTOK: dict[str, tuple[float, float]] = {
+    "gpt-4o-mini": (0.15, 0.60),
+    "gpt-4o": (2.50, 10.00),
+    "gpt-4.1-mini": (0.40, 1.60),
+    "gpt-4.1": (2.00, 8.00),
+}
+# Fallback when the model isn't in the table, so a known token count never
+# silently costs $0. Mirrors gpt-4o-mini (the default model).
+_FALLBACK_RATE: tuple[float, float] = (0.15, 0.60)
+
 
 class OpenAIAdapter:
     provider = "openai"
@@ -48,8 +59,8 @@ class OpenAIAdapter:
         except json.JSONDecodeError:
             json_payload = None
         usage = resp.usage
-        in_tok = getattr(usage, "prompt_tokens", 0) if usage else 0
-        out_tok = getattr(usage, "completion_tokens", 0) if usage else 0
+        in_tok = (getattr(usage, "prompt_tokens", 0) if usage else 0) or 0
+        out_tok = (getattr(usage, "completion_tokens", 0) if usage else 0) or 0
         return LLMResponse(
             text=text,
             json_payload=json_payload,
@@ -57,4 +68,9 @@ class OpenAIAdapter:
             model_id=self.model_id,
             input_tokens=in_tok,
             output_tokens=out_tok,
+            cost_usd=self._cost(in_tok, out_tok),
         )
+
+    def _cost(self, in_tok: int, out_tok: int) -> float:
+        in_price, out_price = _PRICING_USD_PER_MTOK.get(self.model_id, _FALLBACK_RATE)
+        return (in_tok / 1_000_000.0) * in_price + (out_tok / 1_000_000.0) * out_price

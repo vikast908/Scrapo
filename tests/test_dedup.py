@@ -1,3 +1,7 @@
+import asyncio
+
+import pytest
+
 from scrapo.crawl.dedup import UrlDeduper, normalize_url
 
 
@@ -20,9 +24,19 @@ def test_normalize_sorts_query():
     )
 
 
-def test_url_deduper():
+@pytest.mark.asyncio
+async def test_url_deduper():
     d = UrlDeduper()
-    assert d.add("https://example.com/x")
-    assert not d.add("https://EXAMPLE.com/x?utm_x=1")
-    assert d.add("https://example.com/y")
+    assert await d.add("https://example.com/x")
+    assert not await d.add("https://EXAMPLE.com/x?utm_x=1")
+    assert await d.add("https://example.com/y")
     assert "https://example.com/x" in d
+
+
+@pytest.mark.asyncio
+async def test_concurrent_add_same_url_enqueues_once():
+    """Concurrent add() of the same URL must return True exactly once."""
+    d = UrlDeduper()
+    url = "https://example.com/race"
+    results = await asyncio.gather(*(d.add(url) for _ in range(50)))
+    assert sum(1 for r in results if r) == 1

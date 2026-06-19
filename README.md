@@ -7,19 +7,9 @@
 *Selector-cheap. LLM-resilient. Replay-safe. Self-hosted.*
 
 [![CI](https://github.com/vikast908/Scrapo/actions/workflows/ci.yml/badge.svg)](https://github.com/vikast908/Scrapo/actions/workflows/ci.yml)
-[![Python](https://img.shields.io/badge/python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB?style=flat-square)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-22c55e?style=flat-square)](LICENSE)
-[![Status](https://img.shields.io/badge/status-alpha-f59e0b?style=flat-square)](https://github.com/vikast908/Scrapo)
-[![Type-checked](https://img.shields.io/badge/type--checked-mypy_strict-3b82f6?style=flat-square)](https://mypy.readthedocs.io/)
-[![Lint](https://img.shields.io/badge/lint-ruff-d8b4fe?style=flat-square)](https://github.com/astral-sh/ruff)
-[![Async](https://img.shields.io/badge/async-asyncio-2dd4bf?style=flat-square)](https://docs.python.org/3/library/asyncio.html)
-
-[![Playwright](https://img.shields.io/badge/browser-Playwright-2EAD33?style=flat-square&logo=playwright)](https://playwright.dev)
-[![Pydantic](https://img.shields.io/badge/schema-Pydantic_v2-E92063?style=flat-square&logo=pydantic&logoColor=white)](https://docs.pydantic.dev/)
-[![Anthropic](https://img.shields.io/badge/LLM-Anthropic-D97706?style=flat-square)](https://www.anthropic.com/)
-[![OpenAI](https://img.shields.io/badge/LLM-OpenAI-412991?style=flat-square&logo=openai)](https://platform.openai.com/)
-[![Gemini](https://img.shields.io/badge/LLM-Gemini-4285F4?style=flat-square&logo=google)](https://ai.google.dev/)
-[![MCP](https://img.shields.io/badge/protocol-MCP-7c3aed?style=flat-square)](https://modelcontextprotocol.io)
+[![Status: alpha](https://img.shields.io/badge/status-alpha-f59e0b?style=flat-square)](https://github.com/vikast908/Scrapo)
 
 [Quickstart](#quickstart) | [Architecture](#architecture) | [Features](#features) | [Why Scrapo](#why-scrapo) | [CLI](#cli) | [MCP](#use-as-an-mcp-server)
 
@@ -339,6 +329,69 @@ Breaking out of the loop early stops the crawl and tears the shared browser down
 </details>
 
 <details>
+<summary><b>Main-content extraction (cleaner Markdown)</b></summary>
+
+Turn on a readability-style pass that strips site furniture — nav, sidebars, footers, cookie banners, ads — and keeps just the article body before converting to Markdown. Output reads like a clean document, which is what you want for RAG/LLM ingestion.
+
+```python
+res = await scrapo.scrape("https://blog.example.com/post", main_content=True)
+print(res.markdown)   # boilerplate removed; provenance/chunks still attached
+```
+
+Off by default (full-page conversion). Enable per call (`main_content=True`), globally (`Config(main_content=True)`), or via `SCRAPO_MAIN_CONTENT=1`. It scores candidate containers by text vs. link density and prefers `<article>` / `<main>` / `role=main`; if it can't confidently find a main region it falls back to the full page, so it never silently drops content.
+
+</details>
+
+<details>
+<summary><b>Map a site (discover URLs without scraping)</b></summary>
+
+```python
+urls = await scrapo.map_site(["https://docs.example.com/"], max_depth=2)
+```
+
+Merges each origin's `sitemap.xml` with a bounded same-host link crawl and returns a sorted, de-duplicated, SSRF-filtered URL list — a fast "table of contents" before you decide what to actually scrape. `same_host_only` treats `www.` as the same host; binary/asset URLs are skipped. Also `scrapo map` (CLI) and `scrapo_map` (MCP).
+
+</details>
+
+<details>
+<summary><b>Batch scrape (a list of URLs, concurrently)</b></summary>
+
+```python
+items = await scrapo.batch_scrape(urls, schema=Product, main_content=True)
+for it in items:                       # results in input order
+    if it.error: ...                   # per-URL error isolation; one failure never aborts the batch
+    else: save(it.result)
+
+async for it in scrapo.batch_scrape_stream(urls):   # or stream as they complete
+    save(it)
+```
+
+Scrapes exactly the URLs you give it (not a recursive crawl), with bounded concurrency and one shared browser pool + stores across the batch. Also `scrapo batch` (CLI) and `scrapo_batch` (MCP).
+
+</details>
+
+<details>
+<summary><b>Interact: deterministic browser actions (no LLM)</b></summary>
+
+Script the steps to reach content behind buttons, tabs, or simple forms — no model in the loop, so it's cheap and repeatable:
+
+```python
+res = await scrapo.scrape(
+    "https://example.com/app",
+    actions=[
+        {"type": "click", "selector": "button#load-more"},
+        {"type": "wait_for_selector", "selector": ".results"},
+        {"type": "scroll", "amount": 2000},
+        {"type": "type", "selector": "input#q", "text": "widgets"},
+    ],
+)
+```
+
+Supported actions: `goto, click, type, fill, press, scroll, wait, wait_for_selector, screenshot`. Each `goto` target is checked by the SSRF guard. Passing `actions` routes straight to a browser session and works with **no agent driver configured**. For open-ended, model-driven flows, the Tier-4 `AgentDriver` (with token-free action replay) still applies.
+
+</details>
+
+<details>
 <summary><b>Resilience and safety</b></summary>
 
 - **SSRF guard.** Every fetch target is checked before a request goes out; loopback, link-local (including `169.254.169.254`), private RFC 1918 / ULA ranges, and well-known local hostnames are refused. IP literals are parsed with `inet_aton`-style semantics, so obfuscated encodings (decimal `2130706433`, hex `0x7f000001`, short-form `127.1`, dotted-octal `0177.0.0.1`) of internal addresses are caught too. Tier-4 agent `goto` actions chosen by the LLM go through the same guard. Set `allow_private_hosts=True` (or `SCRAPO_ALLOW_PRIVATE_HOSTS=1`) for internal scraping. Crawl link discovery applies the same filter and skips obvious binary URLs.
@@ -423,6 +476,9 @@ Anthropic adapter uses **prompt caching** on the schema block, so repeated extra
 scrapo scrape https://example.com/
 scrapo scrape https://example.com/ --max-tier 3 --screenshot --out-md page.md
 scrapo crawl https://docs.python.org/3/ --max-depth 2 --max-pages 100
+scrapo map https://docs.python.org/3/ --max-depth 2 --out urls.txt   # discover URLs, no scrape
+scrapo batch https://a.com/ https://b.com/ --main-content              # scrape a list concurrently
+scrapo scrape https://example.com/ --main-content                     # strip boilerplate
 scrapo list --limit 10
 scrapo replay <run_id>
 scrapo diff <run_a> <run_b>
@@ -439,7 +495,8 @@ scrapo mcp                      # run the MCP server over stdio
 Scrapo ships an MCP server exposing five tools to any MCP-compatible client (Claude Code, Claude Desktop, Cursor, and others):
 
 ```
-scrapo_scrape    scrapo_crawl    scrapo_replay    scrapo_diff    scrapo_list_runs
+scrapo_scrape    scrapo_crawl    scrapo_map    scrapo_batch
+scrapo_replay    scrapo_diff     scrapo_list_runs
 ```
 
 ```bash
@@ -479,6 +536,7 @@ Every default is overridable via env var:
 | `SCRAPO_RESPECT_ROBOTS` | `0` | `1` to enable the robots gate |
 | `SCRAPO_PII_FILTER` | `0` | `1` to flag PII in the audit log |
 | `SCRAPO_REDACT_SNAPSHOTS` | `0` | `1` to redact PII from stored snapshots/markdown/chunks |
+| `SCRAPO_MAIN_CONTENT` | `0` | `1` to strip boilerplate (nav/sidebar/footer/ads) before markdown |
 | `SCRAPO_ALLOW_PRIVATE_HOSTS` | `0` | `1` to allow fetching private/loopback addresses |
 | `SCRAPO_SNAPSHOT_BACKEND` | `local` | `local` or `s3://bucket/prefix` |
 | `SCRAPO_BROWSER_BLOCK_RESOURCES` | `1` | `0` to let the browser tier load images/fonts/media/css |

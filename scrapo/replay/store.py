@@ -104,9 +104,17 @@ class ReplayStore:
                 fetch.html.encode("utf-8") if fetch.html else None
             )
             if html_path is None and self.config.snapshot_html and blob:
-                html_path = self.snapshots.put(f"{record.run_id}.html.gz", gz(blob))
+                # gzip compression and the snapshot write (local disk or sync
+                # boto3) are blocking; run them off the event loop so concurrent
+                # crawl workers are not stalled.
+                compressed = await asyncio.to_thread(gz, blob)
+                html_path = await asyncio.to_thread(
+                    self.snapshots.put, f"{record.run_id}.html.gz", compressed
+                )
             if fetch.screenshot_png:
-                screenshot_path = self.snapshots.put(f"{record.run_id}.png", fetch.screenshot_png)
+                screenshot_path = await asyncio.to_thread(
+                    self.snapshots.put, f"{record.run_id}.png", fetch.screenshot_png
+                )
             headers_json = json.dumps(fetch.headers)
 
         extraction_json: str | None = None
@@ -158,7 +166,7 @@ class ReplayStore:
         rec = await self.get(run_id)
         if not rec or not rec.get("html_path"):
             return None
-        raw = self.snapshots.get(rec["html_path"])
+        raw = await asyncio.to_thread(self.snapshots.get, rec["html_path"])
         if raw is None:
             return None
         # A snapshot can be corrupt (truncated by a crash mid-write, or written

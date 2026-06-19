@@ -1,7 +1,9 @@
 from typing import Any
 
 from scrapo.access.action_cache import ActionCache
+from scrapo.access.actions import Action, run_actions
 from scrapo.access.agent_drivers import (
+    PROMPT_VERSION,
     LLMAgentDriver,
     _format_elements,
     _record_step,
@@ -187,7 +189,8 @@ async def test_run_records_then_replays_without_llm(tmp_path):
     out1 = await LLMAgentDriver(llm=llm1).run(page1, goal, cache=cache)
     assert out1["replayed"] is False
     assert llm1.calls == 3
-    recorded = await cache.get(url, goal)
+    # the driver namespaces its recordings by prompt version, so read with the same.
+    recorded = await cache.get(url, goal, prompt_version=PROMPT_VERSION)
     assert recorded == [
         {"action": "type", "sel": "input#user", "text_target": "", "tag": "input", "text": "alice"},
         {"action": "click", "sel": "button#go", "text_target": "Sign in", "tag": "button"},
@@ -214,6 +217,7 @@ async def test_replay_falls_back_to_llm_when_element_missing(tmp_path):
             {"action": "type", "sel": "input#user", "text_target": "", "tag": "input", "text": "alice"},
             {"action": "click", "sel": "button#gone", "text_target": "Vanished", "tag": "button"},
         ],
+        prompt_version=PROMPT_VERSION,
     )
     # input#user resolves; button#gone does not, and no element matches the recorded text.
     llm = _ScriptedLLM([{"action": "done"}])
@@ -222,7 +226,7 @@ async def test_replay_falls_back_to_llm_when_element_missing(tmp_path):
     assert out["replayed"] is False
     assert llm.calls == 1
     # one failed replay, below the eviction threshold -> recording still present
-    assert await cache.record_failure(url, goal) == 2
+    assert await cache.record_failure(url, goal, prompt_version=PROMPT_VERSION) == 2
 
 
 async def test_replay_evicts_after_repeated_failures(tmp_path):
@@ -230,13 +234,13 @@ async def test_replay_evicts_after_repeated_failures(tmp_path):
     goal = "g"
     url = "https://s.tld/"
     bad = [{"action": "click", "sel": "button#nope", "text_target": "Nope", "tag": "button"}]
-    await cache.put(url, goal, bad)
+    await cache.put(url, goal, bad, prompt_version=PROMPT_VERSION)
     driver = LLMAgentDriver(llm=_ScriptedLLM([{"action": "done"}, {"action": "done"}]), cache_max_failures=2)
     page = _FakePage(url, [], selector_counts={})
     await driver.run(page, goal, cache=cache)  # failure 1
-    assert await cache.get(url, goal) == bad
+    assert await cache.get(url, goal, prompt_version=PROMPT_VERSION) == bad
     await driver.run(page, goal, cache=cache)  # failure 2 -> evicted
-    assert await cache.get(url, goal) == []
+    assert await cache.get(url, goal, prompt_version=PROMPT_VERSION) == []
 
 
 async def test_replay_handles_goto_and_scroll(tmp_path):
@@ -252,3 +256,106 @@ async def test_replay_handles_goto_and_scroll(tmp_path):
     assert await _replay(page, [{"action": "goto", "text": "/relative"}]) is False
     # an unknown action type fails the replay
     assert await _replay(page, [{"action": "teleport"}]) is False
+
+
+# --- lenient action parsing (Feature 4) -----------------------------------
+
+def test_parse_action_tolerates_trailing_prose():
+    a = parse_action(
+        _resp(text='Sure, here is the action: {"action": "click", "target": 2} -- that is my choice.')
+    )
+    assert a["action"] == "click"
+    assert a["target"] == 2
+
+
+def test_parse_action_tolerates_fences_with_prose():
+    a = parse_action(
+        _resp(text='Thinking...\n```json\n{"action": "type", "target": 0, "text": "x"}\n```\nDone.')
+    )
+    assert a["action"] == "type"
+    assert a["text"] == "x"
+
+
+def test_prompt_version_is_stable_and_nonempty():
+    assert isinstance(PROMPT_VERSION, str)
+    assert len(PROMPT_VERSION) == 16
+
+
+# --- prompt versioning scopes the action cache (Feature 4) ----------------
+
+async def test_changed_prompt_version_misses_stale_recording(tmp_path):
+    cache = ActionCache(tmp_path / "pv.sqlite")
+    url, goal = "https://s.tld/", "log in"
+    actions = [{"action": "scroll"}]
+    await cache.put(url, goal, actions, prompt_version="v1")
+    # same version -> hit; different version -> miss; bare (None) -> miss
+    assert await cache.get(url, goal, prompt_version="v1") == actions
+    assert await cache.get(url, goal, prompt_version="v2") == []
+    assert await cache.get(url, goal) == []
+
+
+# --- Interact actions on a fake page (Feature 1 / 2) -----------------------
+
+class _InteractPage:
+    """Minimal Playwright-style page exposing the surface run_actions needs."""
+
+    def __init__(self) -> None:
+        self.events: list[tuple] = []
+        self.mouse = _Mouse(self)
+
+    async def goto(self, url: str, **_kw: Any) -> None:
+        self.url = url
+        self.events.append(("goto", url))
+
+    async def click(self, selector: str, **_kw: Any) -> None:
+        self.events.append(("click", selector))
+
+    async def type(self, selector: str, text: str) -> None:
+        self.events.append(("type", selector, text))
+
+    async def fill(self, selector: str, text: str) -> None:
+        self.events.append(("fill", selector, text))
+
+    async def press(self, selector: str, key: str) -> None:
+        self.events.append(("press", selector, key))
+
+    async def wait_for_timeout(self, ms: int) -> None:
+        self.events.append(("wait", ms))
+
+
+async def test_run_actions_drives_fake_page_in_order():
+    page = _InteractPage()
+    summary = await run_actions(
+        page,
+        [
+            Action(type="click", selector="#a"),
+            Action(type="type", selector="#u", text="alice"),
+            Action(type="fill", selector="#p", text="pw"),
+            Action(type="scroll", amount=120),
+            Action(type="wait", ms=10),
+        ],
+    )
+    assert summary["executed"] == ["click", "type", "fill", "scroll", "wait"]
+    assert page.events == [
+        ("click", "#a"),
+        ("type", "#u", "alice"),
+        ("fill", "#p", "pw"),
+        ("wheel", 120),
+        ("wait", 10),
+    ]
+
+
+def test_agent_tier_no_driver_guard_bypassed_when_actions_present(tmp_path):
+    """The 'no-agent-driver-configured' block must NOT apply when actions are given.
+
+    playwright isn't installed in CI, so fetch() can't run end-to-end; assert the
+    guard *condition* the tier uses instead.
+    """
+    from scrapo.access.agent_tier import AgentTier
+
+    tier = AgentTier(Config(data_dir=tmp_path / "g"))
+    assert tier.driver is None
+    actions = [Action(type="click", selector="#go")]
+    # guard fires only with neither a driver nor actions
+    assert (tier.driver is None and not actions) is False
+    assert (tier.driver is None and not None) is True

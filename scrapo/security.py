@@ -15,7 +15,11 @@ by network policy if that is in your threat model.
 from __future__ import annotations
 
 import ipaddress
-from urllib.parse import urlparse
+from typing import TYPE_CHECKING, Any
+from urllib.parse import urljoin, urlparse
+
+if TYPE_CHECKING:
+    import httpx
 
 _LOCAL_HOSTNAMES = {
     "localhost",
@@ -126,3 +130,42 @@ def is_url_allowed(url: str, *, allow_private: bool = False) -> bool:
         return True
     except SsrfError:
         return False
+
+
+_REDIRECT_STATUS = (301, 302, 303, 307, 308)
+
+
+async def safe_get(
+    client: httpx.AsyncClient,
+    url: str,
+    *,
+    allow_private: bool = False,
+    max_redirects: int = 10,
+    **kwargs: Any,
+) -> httpx.Response:
+    """GET ``url`` following redirects manually, validating EVERY hop with the SSRF
+    guard before it is followed.
+
+    The httpx client passed in MUST have ``follow_redirects=False`` (otherwise httpx
+    would follow redirects internally, bypassing the per-hop SSRF check). The initial
+    ``url`` is validated by the caller's normal flow, but we re-validate it here too so
+    this helper is safe on its own.
+
+    Raises :class:`SsrfError` if any hop (including a redirect target) points at a
+    blocked address, or if ``max_redirects`` is exceeded.
+    """
+    check_url(url, allow_private=allow_private)
+    current = url
+    for _ in range(max_redirects + 1):
+        resp = await client.get(current, **kwargs)
+        if resp.status_code not in _REDIRECT_STATUS:
+            return resp
+        location = resp.headers.get("location")
+        if not location:
+            return resp
+        next_url = urljoin(current, location)
+        check_url(next_url, allow_private=allow_private)
+        # 303 always switches to GET; 307/308 preserve method. Everything here is
+        # already a GET, so we simply re-issue a GET on the resolved target.
+        current = next_url
+    raise SsrfError(f"too many redirects (>{max_redirects}) starting from {url}")

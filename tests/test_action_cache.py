@@ -1,3 +1,5 @@
+import asyncio
+
 from scrapo.access.action_cache import ActionCache, _goal_hash, _host
 
 
@@ -42,3 +44,41 @@ async def test_put_overwrites_and_clears_failures(tmp_path):
     assert await cache.get("https://s.tld/", "g") == [{"action": "goto", "text": "https://s.tld/next"}]
     # failures were reset by the re-put
     assert await cache.record_failure("https://s.tld/", "g") == 1
+
+
+# --- atomic record_failure (Feature 3) ------------------------------------
+
+async def test_record_failure_returns_atomic_post_increment_count(tmp_path):
+    cache = ActionCache(tmp_path / "atomic.sqlite")
+    await cache.put("https://s.tld/", "g", [{"action": "scroll"}])
+    # Each call returns exactly the count it produced (1, 2, 3 ...), read inside
+    # the same connection block as the UPDATE (RETURNING) so no separate SELECT
+    # can observe a value some other writer changed in between.
+    assert await cache.record_failure("https://s.tld/", "g") == 1
+    assert await cache.record_failure("https://s.tld/", "g") == 2
+    assert await cache.record_failure("https://s.tld/", "g") == 3
+
+
+async def test_record_failure_not_corrupted_by_interleaved_put(tmp_path):
+    """A concurrent put() that resets failure_count=0 must not make record_failure
+    return a stale value: the count is read in the same statement as the UPDATE,
+    so each record_failure reflects its own write, never a racing reset."""
+    cache = ActionCache(tmp_path / "race.sqlite")
+    url, goal = "https://s.tld/", "g"
+    await cache.put(url, goal, [{"action": "scroll"}])
+
+    # Hammer record_failure while a put() (which zeroes failures) lands concurrently.
+    async def reset() -> None:
+        await cache.put(url, goal, [{"action": "scroll"}])
+
+    results = await asyncio.gather(
+        cache.record_failure(url, goal),
+        reset(),
+        cache.record_failure(url, goal),
+        reset(),
+        cache.record_failure(url, goal),
+    )
+    counts = [results[0], results[2], results[4]]
+    # Every returned count is a real post-increment value (>=1): never a 0 read
+    # leaked from a racing reset between an UPDATE and a separate SELECT.
+    assert all(c >= 1 for c in counts), counts

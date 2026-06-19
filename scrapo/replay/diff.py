@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import json
 from dataclasses import dataclass
 from typing import Any
@@ -70,7 +72,7 @@ async def diff_runs(store: ReplayStore, run_a: str, run_b: str) -> DiffReport:
         run_a=run_a,
         run_b=run_b,
         same_url=a["url"] == b["url"],
-        same_html=_same_html(store, a, b),
+        same_html=await _same_html(store, a, b),
         same_method=a["extraction_method"] == b["extraction_method"],
         field_changes=field_changes,
         notes=notes,
@@ -109,18 +111,24 @@ def _extract_data(payload: str | None) -> dict[str, Any]:
     return {}
 
 
-def _same_html(store: ReplayStore, a: dict[str, Any], b: dict[str, Any]) -> bool:
+async def _same_html(store: ReplayStore, a: dict[str, Any], b: dict[str, Any]) -> bool:
     pa, pb = a.get("html_path"), b.get("html_path")
     if not (pa and pb):
         return False
     if pa == pb:
         # The conditional-GET path points two runs at the same archived snapshot.
         return True
-    ba = store.snapshots.get(pa)
-    bb = store.snapshots.get(pb)
+    # No html_hash is persisted on the run record, so we must read both blobs.
+    # Compare by SHA-256 rather than a full O(n) python-level byte equality:
+    # this avoids holding both blobs for the comparison and is clearer for large
+    # gzipped HTML. The (blocking) snapshot reads run off the event loop.
+    ba = await asyncio.to_thread(store.snapshots.get, pa)
+    bb = await asyncio.to_thread(store.snapshots.get, pb)
     if ba is None or bb is None:
         return False
-    return len(ba) == len(bb) and ba == bb
+    ha = hashlib.sha256(ba).hexdigest()
+    hb = hashlib.sha256(bb).hexdigest()
+    return ha == hb
 
 
 def _diff(a: dict[str, Any], b: dict[str, Any]) -> list[FieldDiff]:

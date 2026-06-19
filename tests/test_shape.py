@@ -73,3 +73,47 @@ def test_chunk_byte_offsets_are_utf8_bytes_with_non_ascii():
         # And the chunk text should actually be present in the original markdown.
         if c.text:
             assert c.text[:30].strip().split("\n", 1)[0] in md
+
+
+def test_chunk_byte_range_round_trip_multibyte():
+    # INVARIANT: for every emitted chunk, md_bytes[start:end] decodes to valid
+    # UTF-8 and equals the chunk's OWN source span (chunk.text minus any
+    # prepended overlap). Covers accents, CJK, and emoji.
+    md = "Héllo café\n\n日本語\n\n😀 emoji"
+    md_bytes = md.encode("utf-8")
+    chunks = chunk_markdown(md, target_chars=10000, overlap_chars=0)
+    assert chunks
+    for c in chunks:
+        assert 0 <= c.byte_start <= c.byte_end <= len(md_bytes)
+        span = md_bytes[c.byte_start : c.byte_end]
+        # Must be a valid UTF-8 boundary slice.
+        decoded = span.decode("utf-8")
+        # With no overlap, the decoded span equals the chunk text exactly.
+        assert decoded == c.text
+
+
+def test_chunk_byte_range_round_trip_multibyte_split_with_overlap():
+    # Force the paragraph-split branch with multi-byte content AND overlap on.
+    # The byte range must still be a valid UTF-8 boundary slice that decodes to
+    # the chunk's own (non-overlap) source span: the decoded span is the suffix
+    # of the chunk text once the prepended overlap is removed.
+    md = "# Café 日本語\n\n" + "\n\n".join(
+        f"Para 😀 number {i} with some résumé text." for i in range(40)
+    )
+    md_bytes = md.encode("utf-8")
+    chunks = chunk_markdown(md, target_chars=200, overlap_chars=30)
+    assert len(chunks) > 1
+    for c in chunks:
+        assert 0 <= c.byte_start <= c.byte_end <= len(md_bytes)
+        decoded = md_bytes[c.byte_start : c.byte_end].decode("utf-8")
+        # The byte range points at the OWN source span: the chunk text ends with
+        # exactly that span (the overlap, if any, sits in front).
+        assert c.text.endswith(decoded)
+
+
+def test_inline_deep_nesting_does_not_recurse_to_death():
+    # Pathologically deep nested inline markup must not raise RecursionError.
+    depth = 5000
+    html = "<p>" + "<b><i>" * depth + "deep" + "</i></b>" * depth + "</p>"
+    md = to_markdown(html).markdown
+    assert "deep" in md

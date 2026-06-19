@@ -190,6 +190,43 @@ async def test_crawl_returns_typed_result(isolated_config, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_crawl_shares_one_selector_cache(isolated_config, monkeypatch):
+    """crawl() must build a single SelectorCache and reuse it for every page."""
+    from scrapo import api
+
+    _stub_router(monkeypatch, FakeHttp())
+
+    built: list[object] = []
+    real_cache = api.SelectorCache
+
+    class CountingCache(real_cache):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+            built.append(self)
+
+    monkeypatch.setattr(api, "SelectorCache", CountingCache)
+
+    seen: list[object] = []
+    real_scrape = api.scrape
+
+    async def spy_scrape(*a, **kw):
+        seen.append(kw.get("selector_cache"))
+        return await real_scrape(*a, **kw)
+
+    monkeypatch.setattr(api, "scrape", spy_scrape)
+
+    await api.crawl(
+        ["https://example.com/"], schema=TinyDoc, config=isolated_config, max_depth=0,
+        budget=Budget(max_tier=Tier.HTTP),
+    )
+
+    # exactly one SelectorCache built for the whole crawl
+    assert len(built) == 1
+    # and that same instance is threaded into each per-page scrape() call
+    assert seen and all(c is built[0] for c in seen)
+
+
+@pytest.mark.asyncio
 async def test_rescrape_uses_conditional_get_and_reuses_archive(isolated_config, monkeypatch):
     http = ConditionalHttp()
     _stub_router(monkeypatch, http)

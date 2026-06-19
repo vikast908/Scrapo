@@ -16,6 +16,7 @@ and only fall back to the model if a replayed step no longer applies.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 from dataclasses import dataclass, field
 from typing import Any
@@ -109,6 +110,14 @@ _SNAPSHOT_JS = """() => {
 _SCROLL_PX = 900
 _ACTION_TIMEOUT_MS = 5000
 
+# Version of the driver's prompt. Folded into the action-cache key so that if the
+# prompt changes (different action vocabulary, schema, or instructions), recordings
+# made under the old prompt naturally miss instead of being replayed against a
+# changed expectation. The schema is included because it co-defines the contract.
+PROMPT_VERSION = hashlib.sha256(
+    (_PROMPT + json.dumps(_ACTION_SCHEMA, sort_keys=True)).encode("utf-8")
+).hexdigest()[:16]
+
 
 @dataclass
 class LLMAgentDriver:
@@ -126,10 +135,10 @@ class LLMAgentDriver:
         start_url = getattr(page, "url", "") or ""
 
         if cache is not None and start_url:
-            recorded = await cache.get(start_url, goal)
+            recorded = await cache.get(start_url, goal, prompt_version=PROMPT_VERSION)
             if recorded:
                 if await _replay(page, recorded):
-                    await cache.record_success(start_url, goal)
+                    await cache.record_success(start_url, goal, prompt_version=PROMPT_VERSION)
                     log.debug("scrapo.agent.replayed", goal=goal, steps=len(recorded))
                     return {
                         "goal": goal,
@@ -137,9 +146,9 @@ class LLMAgentDriver:
                         "final_url": getattr(page, "url", ""),
                         "replayed": True,
                     }
-                fails = await cache.record_failure(start_url, goal)
+                fails = await cache.record_failure(start_url, goal, prompt_version=PROMPT_VERSION)
                 if fails >= self.cache_max_failures:
-                    await cache.invalidate(start_url, goal)
+                    await cache.invalidate(start_url, goal, prompt_version=PROMPT_VERSION)
                 log.info("scrapo.agent.replay_failed", goal=goal, failures=fails)
                 # fall through to the LLM loop from wherever replay left the page
 
@@ -165,7 +174,7 @@ class LLMAgentDriver:
                 recorded_actions.append(step)
 
         if cache is not None and start_url and recorded_actions:
-            await cache.put(start_url, goal, recorded_actions)
+            await cache.put(start_url, goal, recorded_actions, prompt_version=PROMPT_VERSION)
         return {"goal": goal, "steps": steps, "final_url": getattr(page, "url", ""), "replayed": False}
 
 
@@ -203,12 +212,30 @@ def _strip_fences(text: str) -> str:
     return text.strip()
 
 
+def _loads_lenient(text: str) -> Any:
+    """Parse a JSON object out of free-form LLM text.
+
+    Mirrors :mod:`scrapo.extract.hybrid`: strip code fences first, then try a
+    straight parse, and if that fails fall back to the substring from the first
+    ``{`` to the last ``}`` so trailing prose ("...reason: done") doesn't defeat
+    parsing. Returns ``None`` if nothing parses.
+    """
+    cleaned = _strip_fences(text)
+    with contextlib.suppress(json.JSONDecodeError):
+        return json.loads(cleaned)
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start >= 0 and end > start:
+        with contextlib.suppress(json.JSONDecodeError):
+            return json.loads(cleaned[start : end + 1])
+    return None
+
+
 def parse_action(resp: LLMResponse) -> dict[str, Any]:
     """Normalize an LLM response into {action, target, text, reason}; never raises."""
     obj: Any = resp.json_payload if isinstance(resp.json_payload, dict) else None
     if obj is None and resp.text:
-        with contextlib.suppress(json.JSONDecodeError):
-            obj = json.loads(_strip_fences(resp.text))
+        obj = _loads_lenient(resp.text)
     if not isinstance(obj, dict):
         return {"action": "done", "target": None, "text": None, "reason": "unparseable action"}
     act = str(obj.get("action") or "done").strip().lower()

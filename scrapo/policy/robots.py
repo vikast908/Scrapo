@@ -13,6 +13,9 @@ from urllib.parse import urljoin, urlparse
 import httpx
 import structlog
 
+from scrapo.config import get_config
+from scrapo.security import SsrfError, safe_get
+
 log = structlog.get_logger(__name__)
 
 
@@ -57,13 +60,21 @@ class RobotsGate:
             if origin in self._cache:
                 return self._cache[origin]
             url = urljoin(origin, "/robots.txt")
+            allow_private = get_config().allow_private_hosts
             try:
                 async with httpx.AsyncClient(
                     timeout=self.timeout,
                     headers={"User-Agent": self.user_agent},
-                    follow_redirects=True,
+                    follow_redirects=False,
                 ) as client:
-                    resp = await client.get(url)
+                    resp = await safe_get(client, url, allow_private=allow_private)
+            except SsrfError as e:
+                # A redirect (or the robots URL itself) pointed at a blocked target.
+                # Treat as no robots.txt — fall through to an allow-nothing-special
+                # empty parser rather than following the dangerous hop.
+                log.debug("scrapo.robots.ssrf_blocked", origin=origin, err=str(e))
+                self._cache[origin] = _empty()
+                return self._cache[origin]
             except httpx.HTTPError as e:
                 log.debug("scrapo.robots.fetch_failed", origin=origin, err=str(e))
                 self._cache[origin] = _empty()
