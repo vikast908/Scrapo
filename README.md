@@ -47,7 +47,7 @@ Scrapo is a Python library that fuses four worlds the rest of the market keeps s
 
 Plus a feature nobody else ships: **deterministic replay** of every fetch, so extraction drift is auditable.
 
-> Not a developer? **[layman.md](layman.md)** explains what Scrapo does, and what it cannot do, in plain English.
+> Not a developer? **[LAYMAN.md](LAYMAN.md)** explains what Scrapo does, and what it cannot do, in plain English.
 
 ---
 
@@ -564,15 +564,20 @@ Pass `upstream=BrightDataAdapter()` to `ProxyPool` to fall back to a managed gat
 <details>
 <summary><b>BYO LLM adapters</b></summary>
 
-| Provider | Adapter | Install | Default model |
-|---|---|---|---|
-| Anthropic Claude | `anthropic` (default) | `pip install "scrapo[anthropic]"` | `claude-opus-4-7` |
-| OpenAI | `openai` | `pip install "scrapo[openai]"` | `gpt-4o-mini` |
-| Google Gemini | `gemini` | `pip install "scrapo[gemini]"` | `gemini-2.5-flash` |
-| DeepSeek | `deepseek` | `pip install "scrapo[openai]"` | `deepseek-v4-flash` |
-| Mock (offline) | `mock` (tests) | always available | n/a |
+Scrapo is **model-agnostic**: native adapters for Anthropic and Gemini, and one generic adapter for *any* OpenAI-wire-compatible endpoint.
 
-Select a provider with `SCRAPO_LLM_ADAPTER` (e.g. `SCRAPO_LLM_ADAPTER=deepseek`). The Anthropic adapter uses **prompt caching** on the schema block, so repeated extractions against the same Pydantic schema are cheap. DeepSeek speaks the OpenAI wire protocol, so it rides the same `openai` client (pointed at `https://api.deepseek.com`) and uses JSON-object mode.
+| Provider | `SCRAPO_LLM_ADAPTER` | Install | Notes |
+|---|---|---|---|
+| Anthropic Claude | `anthropic` | `pip install "scrapo[anthropic]"` | native SDK; prompt-caches the schema block |
+| Google Gemini | `gemini` | `pip install "scrapo[gemini]"` | native SDK |
+| OpenAI | `openai` | `pip install "scrapo[openai]"` | default model `gpt-4o-mini` |
+| DeepSeek | `deepseek` | `pip install "scrapo[openai]"` | default `deepseek-v4-flash` |
+| OpenRouter | `openrouter` | `pip install "scrapo[openai]"` | `OPENROUTER_API_KEY`, `SCRAPO_OPENROUTER_MODEL` |
+| Ollama (local) | `ollama` | `pip install "scrapo[openai]"` | no key; `OLLAMA_BASE_URL` (default `http://localhost:11434/v1`), `SCRAPO_OLLAMA_MODEL` |
+| Any OpenAI-compatible | `openai-compatible` | `pip install "scrapo[openai]"` | set `SCRAPO_LLM_BASE_URL` (+ `SCRAPO_LLM_API_KEY`, `SCRAPO_LLM_MODEL`) — vLLM, LM Studio, Groq, Together, gateways, … |
+| Mock (offline) | `mock` | always available | deterministic, no network |
+
+Pick a provider with `SCRAPO_LLM_ADAPTER`; if unset, Scrapo **auto-detects** from whichever API key is present and falls back to the mock when none is — so a missing key never triggers a surprise call to a specific paid provider. The OpenAI-compatible providers all ride one generic adapter (`base_url` + `api_key` + `model`), so any endpoint speaking the OpenAI chat protocol works — just point `SCRAPO_LLM_BASE_URL` at it. JSON-object mode is requested where supported and transparently dropped for endpoints that reject it, so bare local models still work. The Anthropic adapter uses **prompt caching** on the schema block, so repeated extractions against the same schema are cheap.
 
 </details>
 
@@ -663,10 +668,17 @@ Every default is overridable via env var:
 | `SCRAPO_PROXY_ADAPTER` | unset | default registered adapter name |
 | `SCRAPO_PROXY_URLS` | unset | comma-separated proxy URLs for the rotating pool (used when no adapter is set) |
 | `SCRAPO_PROXY_COOLDOWN` | `120` | seconds a parked proxy stays out of rotation |
-| `SCRAPO_LLM_ADAPTER` | `anthropic` | default LLM provider: `anthropic`, `openai`, `gemini`, or `deepseek` |
-| `SCRAPO_LLM_MODEL` | `claude-opus-4-7` | default model id |
+| `SCRAPO_LLM_ADAPTER` | auto | LLM provider: `anthropic`, `gemini`, `openai`, `deepseek`, `openrouter`, `ollama`, `openai-compatible`. Unset = auto-detect from available key, else mock |
+| `SCRAPO_LLM_MODEL` | provider default | model id for the generic / `openai-compatible` adapter |
+| `SCRAPO_LLM_BASE_URL` | unset | base URL for the `openai-compatible` provider (vLLM, LM Studio, gateways, …); its presence also triggers auto-detect |
+| `SCRAPO_LLM_API_KEY` | unset | API key for the `openai-compatible` provider |
+| `SCRAPO_OPENAI_MODEL` | `gpt-4o-mini` | model id for the OpenAI adapter |
 | `SCRAPO_DEEPSEEK_MODEL` | `deepseek-v4-flash` | model id for the DeepSeek adapter (e.g. `deepseek-v4-flash`, `deepseek-v4-pro`) |
 | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | DeepSeek API base (override for a proxy/gateway) |
+| `SCRAPO_OPENROUTER_MODEL` | `openai/gpt-4o-mini` | model id for the OpenRouter adapter |
+| `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | OpenRouter API base |
+| `SCRAPO_OLLAMA_MODEL` | `llama3.1` | model id for the Ollama adapter |
+| `OLLAMA_BASE_URL` | `http://localhost:11434/v1` | Ollama API base |
 | `SCRAPO_GEO` | unset | default proxy region |
 | `SCRAPO_LOG_LEVEL` | `INFO` | log level for the CLI / MCP server |
 | `SCRAPO_LOG_FORMAT` | `console` | `console` or `json` |
@@ -674,6 +686,7 @@ Every default is overridable via env var:
 | `OPENAI_API_KEY` | unset | for the OpenAI adapter |
 | `GEMINI_API_KEY` | unset | for the Gemini adapter |
 | `DEEPSEEK_API_KEY` | unset | for the DeepSeek adapter |
+| `OPENROUTER_API_KEY` | unset | for the OpenRouter adapter |
 
 ---
 
@@ -681,7 +694,7 @@ Every default is overridable via env var:
 
 ```bash
 pip install -e ".[dev]"
-pytest -q                     # 321 fully-offline tests
+pytest -q                     # 367 fully-offline tests
 ruff check .
 mypy scrapo/
 

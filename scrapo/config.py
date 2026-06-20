@@ -11,7 +11,7 @@ from platformdirs import user_data_dir
 from scrapo.types import Tier
 
 _APP_NAME = "scrapo"
-_DEFAULT_USER_AGENT = "scrapo/0.1 (+https://github.com/anthropics/scrapo)"
+_DEFAULT_USER_AGENT = "scrapo/0.10.0 (+https://github.com/vikast908/Scrapo)"
 
 
 def _default_data_dir() -> Path:
@@ -48,8 +48,12 @@ class Config:
     agent_driver: str | None = None  # "llm" to use the built-in LLMAgentDriver at tier 4
     agent_action_cache: bool = True  # record/replay agent action sequences at tier 4
     watch_poll_seconds: float = 30.0  # how often the watch scheduler wakes to check due watches
-    llm_adapter: str | None = "anthropic"
-    llm_model: str = "claude-opus-4-7"
+    # LLM provider is model-agnostic and selected at runtime from SCRAPO_LLM_ADAPTER
+    # (or auto-detected from whichever API key is present), so these default to None
+    # rather than privileging any one provider.
+    llm_adapter: str | None = None  # anthropic | openai | gemini | deepseek | openrouter | ollama | openai-compatible
+    llm_model: str | None = None  # provider default if unset
+    llm_base_url: str | None = None  # for openai-compatible / custom (e.g. local) endpoints
     geo: str | None = None
 
     def __post_init__(self) -> None:
@@ -130,8 +134,9 @@ class Config:
             agent_driver=os.environ.get("SCRAPO_AGENT_DRIVER") or None,
             agent_action_cache=os.environ.get("SCRAPO_AGENT_ACTION_CACHE", "1") == "1",
             watch_poll_seconds=_env_float("SCRAPO_WATCH_POLL", 30.0),
-            llm_adapter=os.environ.get("SCRAPO_LLM_ADAPTER", "anthropic"),
-            llm_model=os.environ.get("SCRAPO_LLM_MODEL", "claude-opus-4-7"),
+            llm_adapter=os.environ.get("SCRAPO_LLM_ADAPTER") or None,
+            llm_model=os.environ.get("SCRAPO_LLM_MODEL") or None,
+            llm_base_url=os.environ.get("SCRAPO_LLM_BASE_URL") or None,
             geo=os.environ.get("SCRAPO_GEO") or None,
         )
 

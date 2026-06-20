@@ -6,7 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
-## [Unreleased]
+## [0.10.0] - 2026-06-20
+
+Model-agnostic LLM layer, API-first resolution for sites with public APIs, and
+extraction-quality fixes. First PyPI release.
 
 ### Added
 
@@ -26,14 +29,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `force_tier` / `actions` / `screenshot` turns it off for that call. Surfaced to
   agents: the `scrapo_scrape` MCP tool documents it and accepts an `api_first`
   argument. The provider registry is a plain tuple — adding a site is a few lines.
-- **DeepSeek LLM adapter** (`scrapo/extract/llm_adapters/deepseek_adapter.py`):
-  DeepSeek speaks the OpenAI wire protocol, so the adapter reuses the `openai`
-  async client pointed at `https://api.deepseek.com` and uses JSON-object mode
-  (DeepSeek does not support OpenAI's strict `json_schema`). Select it with
-  `SCRAPO_LLM_ADAPTER=deepseek`; configure with `DEEPSEEK_API_KEY`,
-  `SCRAPO_DEEPSEEK_MODEL` (default `deepseek-v4-flash`; `deepseek-chat` /
-  `deepseek-reasoner` are deprecated and map to its non-thinking / thinking modes),
-  and `DEEPSEEK_BASE_URL`. Needs the `scrapo[openai]` extra (the OpenAI client).
+- **Model-agnostic LLM layer** (`scrapo/extract/llm_adapters/openai_compatible.py`):
+  a single generic adapter talks to *any* OpenAI-wire-compatible endpoint —
+  OpenAI, DeepSeek, OpenRouter, Ollama, vLLM, LM Studio, Groq, Together, local
+  gateways — by varying only `base_url` + `api_key` + `model`. Native adapters
+  remain for Anthropic and Gemini (which are not OpenAI-format). Select with
+  `SCRAPO_LLM_ADAPTER` (`anthropic` | `openai` | `gemini` | `deepseek` |
+  `openrouter` | `ollama` | `openai-compatible`); for a custom/local endpoint set
+  `SCRAPO_LLM_BASE_URL` (+ `SCRAPO_LLM_API_KEY`, `SCRAPO_LLM_MODEL`). JSON-object
+  mode is requested where supported and transparently dropped for endpoints/models
+  that reject it, so bare local models still work. DeepSeek and OpenAI are now thin
+  presets of this generic adapter. Needs the `scrapo[openai]` extra (the OpenAI
+  client) for the OpenAI-compatible providers.
+
+### Changed
+
+- **LLM provider is no longer Anthropic-by-default.** When `SCRAPO_LLM_ADAPTER`
+  is unset, Scrapo auto-detects the provider from whichever API key is present
+  (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, `OPENROUTER_API_KEY`,
+  `GEMINI_API_KEY`, or `SCRAPO_LLM_BASE_URL`), and falls back to a deterministic
+  mock when nothing is configured — so a missing key can no longer trigger a
+  surprise call to a specific paid provider.
+- **User-Agent** corrected to `scrapo/0.10.0 (+https://github.com/vikast908/Scrapo)`
+  (was a stale `0.1` pointing at the wrong repository).
+
+### Fixed
+
+- **`result.title` was dropped under `main_content=True`** — main-content
+  extraction strips the document `<head>`, so the `<title>` was lost on most
+  pages. The title now falls back to `og:title` → `<title>` → first `<h1>` from
+  the source HTML. (Extraction A/B over 200+ live pages: title coverage 2/21 → full.)
+- **Publication dates are now also read from HTML5 `<time datetime>` elements**
+  (preferring a published date over modified/updated), closing part of the
+  date-coverage gap when a page has no JSON-LD/OpenGraph date.
 
 
 ## [0.9.0] - 2026-06-20

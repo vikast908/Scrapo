@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-Scrapo is alpha (`0.x`). Security fixes land on the latest released minor version only.
+Scrapo is beta (`0.x`). Security fixes land on the latest released minor version only.
 
 ## Reporting a vulnerability
 
