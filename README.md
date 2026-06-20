@@ -695,6 +695,8 @@ The default suite is **fully offline**; no test hits the network or a paid LLM. 
 
 A separate `pytest -m integration` suite drives a real headless Chromium against a local fixture server to validate the browser tier, the auto-pagination actions, and the end-to-end metadata path (deselected by default; a dedicated CI job runs it).
 
+📊 **Full test & benchmark results** — coverage, performance/throughput, extraction quality vs. trafilatura/readability/newspaper4k/crawl4ai, anti-bot & TLS fingerprinting, WARC-replay and SPA scraping, and sustained-load stability — are documented in **[TESTING.md](TESTING.md)**.
+
 ---
 
 ## Contributing

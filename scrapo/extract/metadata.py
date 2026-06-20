@@ -210,6 +210,44 @@ def _collect_microdata(tree: HTMLParser) -> dict[str, Any]:
     return out
 
 
+def _collect_time(tree: HTMLParser) -> dict[str, Any]:
+    """Pull a publication date from HTML5 ``<time datetime=...>`` elements.
+
+    A huge fraction of articles mark their date only with a ``<time>`` tag rather
+    than JSON-LD/OpenGraph, so reading it closes most of the date-coverage gap.
+    Prefers a ``<time>`` whose itemprop/class/pubdate marks it as a *published*
+    date; otherwise falls back to the first ``<time datetime>``. Modified/updated
+    timestamps are skipped so they don't shadow the publish date. Mapped to
+    ``datepublished`` so a schema's date field resolves from it.
+    """
+    out: dict[str, Any] = {}
+    fallback: str | None = None
+    for node in tree.css("time"):
+        attrs = node.attributes
+        dt = (attrs.get("datetime") or "").strip()
+        if not dt:
+            continue
+        ident = " ".join(
+            filter(
+                None,
+                (
+                    attrs.get("itemprop") or "",
+                    attrs.get("class") or "",
+                    "pubdate" if "pubdate" in attrs else "",
+                ),
+            )
+        ).lower()
+        if any(k in ident for k in ("publish", "posted", "pubdate", "created")) and not any(
+            k in ident for k in ("modif", "updat")
+        ):
+            out.setdefault("datepublished", dt)
+        elif fallback is None and not any(k in ident for k in ("modif", "updat")):
+            fallback = dt
+    if "datepublished" not in out and fallback is not None:
+        out["datepublished"] = fallback
+    return out
+
+
 def _list_field_models(model: type[BaseModel]) -> dict[str, type[BaseModel] | None]:
     """field name -> item model (``None`` for ``list[str]`` and friends)."""
     out: dict[str, type[BaseModel] | None] = {}
@@ -282,17 +320,20 @@ def extract_from_metadata(html: str, model: type[BaseModel]) -> MetadataResult |
     ld_objects = _collect_jsonld(tree)
     meta = _collect_meta(tree)
     micro = _collect_microdata(tree)
-    if not ld_objects and not meta and not micro:
+    times = _collect_time(tree)
+    if not ld_objects and not meta and not micro and not times:
         return None
 
-    # Precedence: JSON-LD (richest) > microdata > meta. setdefault keeps the
-    # first writer, so flatten JSON-LD first.
+    # Precedence: JSON-LD (richest) > microdata > meta > <time> tag (a date-only
+    # fallback). setdefault keeps the first writer, so flatten JSON-LD first.
     scalar_source: dict[str, Any] = {}
     for obj in ld_objects:
         _flatten(obj, scalar_source)
     for key, value in micro.items():
         scalar_source.setdefault(key, value)
     for key, value in meta.items():
+        scalar_source.setdefault(key, value)
+    for key, value in times.items():
         scalar_source.setdefault(key, value)
 
     list_models = _list_field_models(model)

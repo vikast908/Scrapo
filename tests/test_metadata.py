@@ -104,6 +104,48 @@ def test_jsonld_graph_and_list_field():
     assert [i.name for i in res.data.ingredients] == ["flour", "milk", "egg"]
 
 
+class Dated(BaseModel):
+    title: str | None = None
+    date_published: str | None = None
+
+
+def test_time_tag_supplies_published_date():
+    # No JSON-LD/OG date — only an HTML5 <time> tag, the common real-world case.
+    html = (
+        '<html><head><meta property="og:title" content="Post"></head><body>'
+        '<article><h1>Post</h1>'
+        '<time class="entry-date published" datetime="2026-06-20T10:00:00Z">June 20, 2026</time>'
+        '<p>body</p></article></body></html>'
+    )
+    res = extract_from_metadata(html, Dated)
+    assert res is not None
+    assert res.data.date_published == "2026-06-20T10:00:00Z"
+
+
+def test_time_tag_prefers_published_over_modified():
+    html = (
+        '<html><head><meta property="og:title" content="Post"></head><body>'
+        '<time class="updated" datetime="2026-07-01">updated</time>'
+        '<time class="published" datetime="2026-06-20">published</time>'
+        '</body></html>'
+    )
+    res = extract_from_metadata(html, Dated)
+    assert res is not None
+    assert res.data.date_published == "2026-06-20"  # modified timestamp not chosen
+
+
+def test_structured_date_still_wins_over_time_tag():
+    # JSON-LD datePublished must take precedence over a <time> fallback.
+    html = (
+        '<html><head><script type="application/ld+json">'
+        '{"@type":"Article","headline":"X","datePublished":"2020-01-01"}</script></head>'
+        '<body><time datetime="2026-06-20">later</time></body></html>'
+    )
+    res = extract_from_metadata(html, Dated)
+    assert res is not None
+    assert res.data.date_published == "2020-01-01"
+
+
 class StrictDoc(BaseModel):
     isbn: str  # required, no alias, never present in the structured data below
     name: str | None = None
