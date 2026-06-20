@@ -75,4 +75,4 @@ Lots of tools can scrape a page. Very few keep a **permanent, replayable record*
 ## Where to go next
 
 - The [README](README.md) has the technical quickstart, the full feature list, and configuration.
-- `pip install scrapo`, then `scrapo serve` to poke at it in a browser, or `scrapo scrape https://example.com/` from the terminal.
+- `pip install scrapo-ai` (the package is `scrapo-ai`; in code you still `import scrapo`), then `scrapo serve` to poke at it in a browser, or `scrapo scrape https://example.com/` from the terminal.

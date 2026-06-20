@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "scrapo"
+name = "scrapo-ai"
 version = "0.10.0"
 description = "AI-native, agent-first web scraping library with deterministic replay"
 readme = "README.md"

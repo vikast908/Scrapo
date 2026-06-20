@@ -121,9 +121,9 @@ scrapo/
 ## Quickstart
 
 ```bash
-pip install scrapo
+pip install scrapo-ai          # distribution is "scrapo-ai"; in code you `import scrapo`
 
-pip install "scrapo[browser,anthropic,mcp]"
+pip install "scrapo-ai[browser,anthropic,mcp]"
 playwright install chromium
 ```
 
@@ -231,7 +231,7 @@ A URL is not always an HTML page, so `scrape()` dispatches on `Content-Type` (wi
 | `text/html` | the normal selectolax + markdown + chunk pipeline | `html` |
 | `application/json` / `ld+json` | pretty-printed JSON as markdown; parsed object on `result.data` | `json` |
 | RSS / Atom | a markdown list of entries; parsed items on `result.data` | `feed` |
-| `application/pdf` | extracted text (requires `pip install "scrapo[pdf]"`) | `pdf` |
+| `application/pdf` | extracted text (requires `pip install "scrapo-ai[pdf]"`) | `pdf` |
 | `text/plain` | the body verbatim | `text` |
 
 </details>
@@ -505,7 +505,7 @@ await sched.run_forever()              # tick, check due watches, POST on change
 - **Bounded HTTP retries.** Transient `429 / 5xx` and transport errors are retried with exponential backoff and jitter before the router escalates to a heavier tier (`SCRAPO_HTTP_RETRIES`, default `2`).
 - **Rotating proxy pool with health checks.** Hand Scrapo a list of proxy URLs (`Config(proxy_urls=[...])` or `SCRAPO_PROXY_URLS="http://a,http://b"`) and the router round-robins across them. Every fetch's outcome is fed back: an HTTP 4xx auth/rate-limit code or an anti-bot fingerprint parks that proxy for `proxy_cooldown_seconds` (it's an IP-level block); a transient 5xx / network error counts toward `max_failures`; a clean fetch resets the streak. `ProxyPool` implements the `ProxyAdapter` protocol, so it composes with the vendor adapters; pass `upstream=<adapter>` to fall back to a managed gateway when every static endpoint is parked. Credentials are stripped from proxy URLs before they're logged.
 - **Concurrency-safe storage.** All SQLite stores (replay, selector cache, crawl queue, agent action cache) open in WAL mode with a busy timeout, and the per-store init step is guarded by an `asyncio.Lock` so concurrent first callers can't race on schema setup. Crawl workers honoring per-host `crawl-delay` no longer block workers for *other* hosts.
-- **Pluggable snapshot storage.** Replay metadata stays in SQLite, but the page bodies go through a `SnapshotStore`: local files by default (atomic write-then-rename, so a crash mid-write can't leave a partial snapshot recorded as complete), or S3 with `snapshot_backend="s3://bucket/prefix"` (`pip install "scrapo[s3]"`). A corrupt archive is detected on read and falls back to a fresh fetch instead of raising.
+- **Pluggable snapshot storage.** Replay metadata stays in SQLite, but the page bodies go through a `SnapshotStore`: local files by default (atomic write-then-rename, so a crash mid-write can't leave a partial snapshot recorded as complete), or S3 with `snapshot_backend="s3://bucket/prefix"` (`pip install "scrapo-ai[s3]"`). A corrupt archive is detected on read and falls back to a fresh fetch instead of raising.
 - **Browser reuse and lighter pages.** A `TierRouter` launches one headless Chromium lazily and reuses it across fetches (proxy applied per context); the browser tiers also block images/fonts/media/css and surface JSON XHR responses. `TierRouter.aclose()` tears it down; `scrape()` and `crawl()` handle that for you.
 - **Cost accounting.** LLM cost is computed per call, recorded on the run, and enforceable via `Budget(max_llm_calls=..., max_cost_usd=...)`.
 - **PII handling.** Flag PII in the audit log (`SCRAPO_PII_FILTER=1`), or redact it from the stored snapshot, markdown, and chunks (`SCRAPO_REDACT_SNAPSHOTS=1`).
@@ -568,13 +568,13 @@ Scrapo is **model-agnostic**: native adapters for Anthropic and Gemini, and one 
 
 | Provider | `SCRAPO_LLM_ADAPTER` | Install | Notes |
 |---|---|---|---|
-| Anthropic Claude | `anthropic` | `pip install "scrapo[anthropic]"` | native SDK; prompt-caches the schema block |
-| Google Gemini | `gemini` | `pip install "scrapo[gemini]"` | native SDK |
-| OpenAI | `openai` | `pip install "scrapo[openai]"` | default model `gpt-4o-mini` |
-| DeepSeek | `deepseek` | `pip install "scrapo[openai]"` | default `deepseek-v4-flash` |
-| OpenRouter | `openrouter` | `pip install "scrapo[openai]"` | `OPENROUTER_API_KEY`, `SCRAPO_OPENROUTER_MODEL` |
-| Ollama (local) | `ollama` | `pip install "scrapo[openai]"` | no key; `OLLAMA_BASE_URL` (default `http://localhost:11434/v1`), `SCRAPO_OLLAMA_MODEL` |
-| Any OpenAI-compatible | `openai-compatible` | `pip install "scrapo[openai]"` | set `SCRAPO_LLM_BASE_URL` (+ `SCRAPO_LLM_API_KEY`, `SCRAPO_LLM_MODEL`) — vLLM, LM Studio, Groq, Together, gateways, … |
+| Anthropic Claude | `anthropic` | `pip install "scrapo-ai[anthropic]"` | native SDK; prompt-caches the schema block |
+| Google Gemini | `gemini` | `pip install "scrapo-ai[gemini]"` | native SDK |
+| OpenAI | `openai` | `pip install "scrapo-ai[openai]"` | default model `gpt-4o-mini` |
+| DeepSeek | `deepseek` | `pip install "scrapo-ai[openai]"` | default `deepseek-v4-flash` |
+| OpenRouter | `openrouter` | `pip install "scrapo-ai[openai]"` | `OPENROUTER_API_KEY`, `SCRAPO_OPENROUTER_MODEL` |
+| Ollama (local) | `ollama` | `pip install "scrapo-ai[openai]"` | no key; `OLLAMA_BASE_URL` (default `http://localhost:11434/v1`), `SCRAPO_OLLAMA_MODEL` |
+| Any OpenAI-compatible | `openai-compatible` | `pip install "scrapo-ai[openai]"` | set `SCRAPO_LLM_BASE_URL` (+ `SCRAPO_LLM_API_KEY`, `SCRAPO_LLM_MODEL`) — vLLM, LM Studio, Groq, Together, gateways, … |
 | Mock (offline) | `mock` | always available | deterministic, no network |
 
 Pick a provider with `SCRAPO_LLM_ADAPTER`; if unset, Scrapo **auto-detects** from whichever API key is present and falls back to the mock when none is — so a missing key never triggers a surprise call to a specific paid provider. The OpenAI-compatible providers all ride one generic adapter (`base_url` + `api_key` + `model`), so any endpoint speaking the OpenAI chat protocol works — just point `SCRAPO_LLM_BASE_URL` at it. JSON-object mode is requested where supported and transparently dropped for endpoints that reject it, so bare local models still work. The Anthropic adapter uses **prompt caching** on the schema block, so repeated extractions against the same schema are cheap.
@@ -619,7 +619,7 @@ scrapo_replay    scrapo_diff     scrapo_list_runs
 For agents this is the path of least resistance: hand `scrapo_scrape` a URL and it returns clean markdown + provenance-tagged chunks, re-scrapes come back fast via conditional GET, and **known sites with a public API (Wikipedia and its Wikimedia sister projects) are auto-routed through that API** — so a Wikipedia URL just works with no CAPTCHA and no `max_tier` tuning, and the result reports `via="api:wikipedia"`.
 
 ```bash
-pip install "scrapo[mcp]"
+pip install "scrapo-ai[mcp]"
 scrapo mcp
 ```
 
