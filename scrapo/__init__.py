@@ -13,6 +13,13 @@ from scrapo.api import (
 from scrapo.config import Config
 from scrapo.crawl.batch import BatchItem
 from scrapo.results import ChunkView, CrawlResult, ExtractionView, ScrapeResult
+from scrapo.sync import (
+    batch_scrape_sync,
+    crawl_sync,
+    extract_sync,
+    map_site_sync,
+    scrape_sync,
+)
 from scrapo.types import (
     Budget,
     ChunkedDocument,
@@ -25,7 +32,7 @@ from scrapo.types import (
 )
 from scrapo.watch import ChangeSet, Watch, watch
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"
 
 __all__ = [
     "Action",
@@ -47,10 +54,15 @@ __all__ = [
     "Watch",
     "batch_scrape",
     "batch_scrape_stream",
+    "batch_scrape_sync",
     "crawl",
     "crawl_stream",
+    "crawl_sync",
     "extract",
+    "extract_sync",
     "map_site",
+    "map_site_sync",
     "scrape",
+    "scrape_sync",
     "watch",
 ]

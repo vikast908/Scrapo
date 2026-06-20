@@ -6,7 +6,7 @@ import asyncio
 import json
 import sys
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 from rich.console import Console
@@ -20,6 +20,7 @@ from scrapo.config import Config, set_config
 from scrapo.logging import configure_logging
 from scrapo.replay.diff import diff_runs, diff_summary
 from scrapo.replay.store import ReplayStore
+from scrapo.results import ScrapeResult
 from scrapo.shape.provenance import shape_document
 from scrapo.types import Budget, Tier
 
@@ -38,6 +39,20 @@ def _load_config(data_dir: Path | None) -> Config:
     return cfg
 
 
+def _export(results: list[Any], *, out_jsonl: Path | None, out_csv: Path | None) -> None:
+    """Write batch/crawl results to JSONL and/or CSV if either path was given."""
+    if not (out_jsonl or out_csv):
+        return
+    from scrapo.export import to_csv, to_jsonl
+
+    if out_jsonl:
+        n = to_jsonl(results, out_jsonl)
+        console.print(f"[green]wrote[/green] {n} records → {out_jsonl}")
+    if out_csv:
+        n = to_csv(results, out_csv)
+        console.print(f"[green]wrote[/green] {n} rows → {out_csv}")
+
+
 @app.command()
 def scrape(
     url: Annotated[str, typer.Argument(help="URL to fetch")],
@@ -45,6 +60,7 @@ def scrape(
     wait_for: Annotated[str | None, typer.Option(help="CSS selector to wait for (browser tier)")] = None,
     screenshot: Annotated[bool, typer.Option(help="Capture screenshot (browser tier)")] = False,
     main_content: Annotated[bool, typer.Option(help="Strip boilerplate (nav/sidebar/footer) before markdown")] = False,
+    api_first: Annotated[bool, typer.Option(help="Use a known site's public API (e.g. Wikipedia) instead of the page")] = True,
     diff_last: Annotated[bool, typer.Option(help="Diff against the previous recorded run of this URL")] = False,
     data_dir: Annotated[Path | None, typer.Option(help="Override data dir")] = None,
     out_md: Annotated[Path | None, typer.Option(help="Write markdown to this file")] = None,
@@ -56,16 +72,17 @@ def scrape(
     result = asyncio.run(
         scrape_api(
             url, budget=budget, wait_for=wait_for, screenshot=screenshot,
-            main_content=main_content,
+            main_content=main_content, api_first=api_first,
         )
     )
     if result.get("blocked"):
         console.print(f"[red]blocked:[/red] {result.get('block_reason')}")
         raise typer.Exit(code=2)
     flags = " [yellow]not-modified[/yellow]" if result.get("not_modified") else ""
+    via = f" via={result['via']}" if result.get("via") else ""
     console.print(
         f"[green]OK[/green] {result['url']}{flags}  "
-        f"[dim]tier={result['tier_used']} status={result['status']} "
+        f"[dim]tier={result['tier_used']}{via} status={result['status']} "
         f"chunks={len(result['chunks'])} run={result['run_id'][:12]}...[/dim]"
     )
     if diff_last:
@@ -92,14 +109,23 @@ def crawl(
     max_tier: Annotated[int, typer.Option(help="Tier ceiling")] = 2,
     same_host: Annotated[bool, typer.Option(help="Restrict to seed hosts")] = True,
     use_sitemap: Annotated[bool, typer.Option(help="Also seed from each origin's sitemap.xml")] = False,
+    out_jsonl: Annotated[Path | None, typer.Option(help="Write each crawled page as JSON Lines")] = None,
+    out_csv: Annotated[Path | None, typer.Option(help="Write crawled pages as a flat CSV")] = None,
     data_dir: Annotated[Path | None, typer.Option(help="Override data dir")] = None,
 ) -> None:
     """Crawl from seed URLs."""
     _load_config(data_dir)
     budget = Budget(max_tier=Tier(max_tier), max_pages=max_pages)
+    pages: list[ScrapeResult] = []
+
+    async def _collect(page: ScrapeResult) -> None:
+        pages.append(page)
+
+    on_page = _collect if (out_jsonl or out_csv) else None
     result = asyncio.run(
         crawl_api(
-            seed, budget=budget, max_depth=max_depth, same_host_only=same_host, use_sitemap=use_sitemap
+            seed, budget=budget, max_depth=max_depth, same_host_only=same_host,
+            use_sitemap=use_sitemap, on_page=on_page,
         )
     )
     console.print(f"[green]crawl_id:[/green] {result['crawl_id']}")
@@ -107,6 +133,7 @@ def crawl(
     for status, count in result["stats"].items():
         table.add_row(status, str(count))
     console.print(table)
+    _export(pages, out_jsonl=out_jsonl, out_csv=out_csv)
 
 
 @app.command(name="map")
@@ -141,6 +168,8 @@ def batch(
     max_tier: Annotated[int, typer.Option(help="Tier ceiling")] = 2,
     concurrency: Annotated[int | None, typer.Option(help="Max concurrent scrapes")] = None,
     main_content: Annotated[bool, typer.Option(help="Strip boilerplate before markdown")] = False,
+    out_jsonl: Annotated[Path | None, typer.Option(help="Write results as JSON Lines")] = None,
+    out_csv: Annotated[Path | None, typer.Option(help="Write results as a flat CSV")] = None,
     data_dir: Annotated[Path | None, typer.Option(help="Override data dir")] = None,
 ) -> None:
     """Scrape an explicit list of URLs concurrently (not a recursive crawl)."""
@@ -162,6 +191,7 @@ def batch(
     console.print(table)
     ok = sum(1 for it in items if it.result and not it.result.get("blocked"))
     console.print(f"[green]{ok}/{len(items)} ok[/green]")
+    _export(items, out_jsonl=out_jsonl, out_csv=out_csv)
 
 
 @app.command(name="list")
@@ -239,6 +269,86 @@ def audit(
     events = asyncio.run(log.tail(n))
     for ev in events:
         console.print(json.dumps(ev, default=str))
+
+
+@app.command(name="watch-add")
+def watch_add(
+    url: Annotated[str, typer.Argument(help="URL to watch for changes")],
+    interval: Annotated[float, typer.Option(help="Seconds between checks")] = 3600.0,
+    webhook: Annotated[str | None, typer.Option(help="POST a change payload here")] = None,
+    label: Annotated[str | None, typer.Option(help="Human label for the watch")] = None,
+    data_dir: Annotated[Path | None, typer.Option(help="Override data dir")] = None,
+) -> None:
+    """Register a persistent watch (checked by `scrapo watch-run`)."""
+    cfg = _load_config(data_dir)
+    from scrapo.server import WatchStore
+
+    store = WatchStore(cfg.watch_db)
+    row = asyncio.run(
+        store.add(url, interval_seconds=interval, webhook_url=webhook, label=label)
+    )
+    console.print(f"[green]added[/green] watch {row.id[:12]}  [dim]{url} every {interval:g}s[/dim]")
+
+
+@app.command(name="watch-list")
+def watch_list(
+    data_dir: Annotated[Path | None, typer.Option(help="Override data dir")] = None,
+) -> None:
+    """List persisted watches."""
+    cfg = _load_config(data_dir)
+    from scrapo.server import WatchStore
+
+    rows = asyncio.run(WatchStore(cfg.watch_db).list_all())
+    if not rows:
+        console.print("[dim]no watches yet[/dim]")
+        return
+    table = Table("id", "url", "interval", "enabled", "last_checked", "label")
+    for r in rows:
+        table.add_row(
+            r.id[:12],
+            r.url[:50],
+            f"{r.interval_seconds:g}s",
+            "yes" if r.enabled else "no",
+            f"{r.last_checked_at:.0f}" if r.last_checked_at else "-",
+            r.label or "-",
+        )
+    console.print(table)
+
+
+@app.command(name="watch-remove")
+def watch_remove(
+    watch_id: Annotated[str, typer.Argument(help="Watch id to remove")],
+    data_dir: Annotated[Path | None, typer.Option(help="Override data dir")] = None,
+) -> None:
+    """Remove a persisted watch."""
+    cfg = _load_config(data_dir)
+    from scrapo.server import WatchStore
+
+    removed = asyncio.run(WatchStore(cfg.watch_db).remove(watch_id))
+    if removed:
+        console.print(f"[green]removed[/green] {watch_id[:12]}")
+    else:
+        console.print(f"[red]not found:[/red] {watch_id}")
+        raise typer.Exit(code=2)
+
+
+@app.command(name="watch-run")
+def watch_run(
+    poll: Annotated[float | None, typer.Option(help="Seconds between scheduler ticks")] = None,
+    data_dir: Annotated[Path | None, typer.Option(help="Override data dir")] = None,
+) -> None:
+    """Run the watch scheduler loop (Ctrl-C to stop)."""
+    cfg = _load_config(data_dir)
+    from scrapo.server import WatchScheduler, WatchStore, WebhookNotifier
+
+    store = WatchStore(cfg.watch_db)
+    rows = asyncio.run(store.list_all())
+    console.print(f"[green]watching[/green] {len(rows)} url(s); Ctrl-C to stop")
+    scheduler = WatchScheduler(store, config=cfg, notifier=WebhookNotifier())
+    try:
+        asyncio.run(scheduler.run_forever(poll_seconds=poll))
+    except KeyboardInterrupt:
+        console.print("[dim]stopped[/dim]")
 
 
 @app.command()

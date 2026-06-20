@@ -33,6 +33,8 @@ _KNOWN_TYPES = (
     "fill",
     "press",
     "scroll",
+    "scroll_until",
+    "click_until",
     "wait",
     "wait_for_selector",
     "screenshot",
@@ -40,11 +42,18 @@ _KNOWN_TYPES = (
 
 # Fields each action carries; used by coerce_actions to reject unknown keys.
 _ACTION_FIELDS = frozenset(
-    {"type", "selector", "text", "url", "key", "timeout_ms", "ms", "amount"}
+    {"type", "selector", "text", "url", "key", "timeout_ms", "ms", "amount", "times"}
 )
 
 # How many pixels to scroll when an "amount" is not supplied.
 _DEFAULT_SCROLL_PX = 800
+# Pixels per round for the auto-pagination scroll (a near-viewport jump that
+# reliably triggers infinite-scroll loaders).
+_DEFAULT_AUTOSCROLL_PX = 2000
+# Default cap on rounds for the bounded *_until verbs.
+_DEFAULT_UNTIL_ROUNDS = 10
+# Pause after each round so lazily-loaded content can arrive before we re-measure.
+_DEFAULT_SETTLE_MS = 400
 
 
 @dataclass(slots=True)
@@ -60,6 +69,12 @@ class Action:
     * ``press`` needs ``key`` (``selector`` defaults to ``body``)
     * ``wait`` uses ``ms``
     * ``scroll`` uses ``amount`` (pixels; defaults to ``_DEFAULT_SCROLL_PX``)
+    * ``scroll_until`` keeps scrolling until the page stops growing (or, with a
+      ``selector``, until that selector's match count stops increasing), bounded
+      by ``times`` rounds (default ``_DEFAULT_UNTIL_ROUNDS``), ``amount`` pixels
+      per round, ``ms`` settle delay between rounds — for infinite scroll.
+    * ``click_until`` repeatedly clicks ``selector`` (a "load more" button) until
+      it is gone, bounded by ``times`` rounds — for click-to-paginate lists.
     """
 
     type: str
@@ -70,13 +85,14 @@ class Action:
     timeout_ms: int = 10000
     ms: int | None = None
     amount: int | None = None
+    times: int | None = None  # round cap for the bounded *_until verbs
 
     def __post_init__(self) -> None:
         if self.type not in _KNOWN_TYPES:
             raise ValueError(f"unknown action type: {self.type!r}")
         if self.type == "goto" and not self.url:
             raise ValueError("action 'goto' requires 'url'")
-        if self.type in ("click", "wait_for_selector") and not self.selector:
+        if self.type in ("click", "wait_for_selector", "click_until") and not self.selector:
             raise ValueError(f"action {self.type!r} requires 'selector'")
         if self.type in ("type", "fill"):
             if not self.selector:
@@ -159,9 +175,56 @@ async def _dispatch(page: Any, action: Action) -> None:
         # Use mouse.wheel for a real wheel event (consistent with the agent driver,
         # which scrolls the same way).
         await page.mouse.wheel(0, action.amount if action.amount is not None else _DEFAULT_SCROLL_PX)
+    elif t == "scroll_until":
+        await _scroll_until(page, action)
+    elif t == "click_until":
+        await _click_until(page, action)
     elif t == "wait":
         await page.wait_for_timeout(action.ms if action.ms is not None else 0)
     elif t == "wait_for_selector":
         await page.wait_for_selector(action.selector, timeout=action.timeout_ms)
     elif t == "screenshot":
         await page.screenshot()
+
+
+async def _measure(page: Any, selector: str | None) -> int:
+    """A monotonic progress signal: matches of ``selector`` if given, else page height."""
+    if selector:
+        nodes = await page.query_selector_all(selector)
+        return len(nodes)
+    height = await page.evaluate("() => document.body.scrollHeight")
+    try:
+        return int(height)
+    except (TypeError, ValueError):
+        return 0
+
+
+async def _scroll_until(page: Any, action: Action) -> None:
+    """Scroll repeatedly until the page (or ``selector`` count) stops growing.
+
+    Bounded by ``times`` rounds so a genuinely infinite feed can't loop forever.
+    Stops early the first round that doesn't add new content.
+    """
+    rounds = action.times if action.times is not None else _DEFAULT_UNTIL_ROUNDS
+    settle = action.ms if action.ms is not None else _DEFAULT_SETTLE_MS
+    step = action.amount if action.amount is not None else _DEFAULT_AUTOSCROLL_PX
+    previous = -1
+    for _ in range(max(1, rounds)):
+        await page.mouse.wheel(0, step)
+        await page.wait_for_timeout(settle)
+        current = await _measure(page, action.selector)
+        if current <= previous:
+            break  # nothing new loaded — we've reached the end
+        previous = current
+
+
+async def _click_until(page: Any, action: Action) -> None:
+    """Click ``selector`` until it disappears (e.g. a "Load more" button), bounded by rounds."""
+    rounds = action.times if action.times is not None else _DEFAULT_UNTIL_ROUNDS
+    settle = action.ms if action.ms is not None else _DEFAULT_SETTLE_MS
+    for _ in range(max(1, rounds)):
+        target = await page.query_selector(action.selector)
+        if target is None:
+            break  # the button is gone — fully paginated
+        await page.click(action.selector, timeout=action.timeout_ms)
+        await page.wait_for_timeout(settle)

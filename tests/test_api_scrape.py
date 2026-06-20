@@ -34,6 +34,25 @@ class BlockedHttp:
         )
 
 
+class RecordingHttp:
+    """Returns a fixed page and records every URL it was asked to fetch.
+
+    Defaults to a substantial (non-"thin") body so the tier router does not
+    escalate and re-fetch — keeping the recorded fetch count meaningful.
+    """
+
+    def __init__(self, html=None):
+        self.html = html if html is not None else _BIG_PAGE
+        self.fetched: list[str] = []
+
+    async def fetch(self, url, **kwargs):
+        self.fetched.append(url)
+        return FetchResult(
+            url=url, final_url=url, status=200, html=self.html,
+            headers={"content-type": "text/html"}, tier_used=Tier.HTTP,
+        )
+
+
 _BIG_PAGE = "<!doctype html><html><head><title>Demo</title></head><body><main><h1>Hello</h1><p>" + ("x " * 200) + "</p></main></body></html>"
 
 
@@ -248,6 +267,69 @@ async def test_rescrape_uses_conditional_get_and_reuses_archive(isolated_config,
     assert runs[0]["not_modified"] == 1
     assert runs[0]["html_path"] == runs[1]["html_path"]  # no duplicate snapshot written
     assert runs[0]["etag"] == '"v1"'
+
+
+@pytest.mark.asyncio
+async def test_api_first_rewrites_wikipedia_to_rest_api(isolated_config, monkeypatch):
+    http = RecordingHttp()
+    _stub_router(monkeypatch, http)
+    result = await scrape(
+        "https://en.wikipedia.org/wiki/Albert_Einstein", config=isolated_config
+    )
+    # we hit the REST endpoint, not the bot-walled page
+    assert http.fetched == [
+        "https://en.wikipedia.org/api/rest_v1/page/html/Albert_Einstein"
+    ]
+    # ...but the result still presents the page the caller asked for, tagged via
+    assert result.url == "https://en.wikipedia.org/wiki/Albert_Einstein"
+    assert result.via == "api:wikipedia"
+    assert result["via"] == "api:wikipedia"
+    assert result.tier_used == "http"
+    assert "Hello" in (result.markdown or "")
+
+
+@pytest.mark.asyncio
+async def test_api_first_off_per_call_scrapes_real_page(isolated_config, monkeypatch):
+    http = RecordingHttp()
+    _stub_router(monkeypatch, http)
+    result = await scrape(
+        "https://en.wikipedia.org/wiki/Albert_Einstein",
+        config=isolated_config,
+        api_first=False,
+    )
+    assert http.fetched == ["https://en.wikipedia.org/wiki/Albert_Einstein"]
+    assert result.via is None
+    assert "via" not in result  # None field reads as absent
+
+
+@pytest.mark.asyncio
+async def test_api_first_off_via_config(isolated_config, monkeypatch):
+    http = RecordingHttp()
+    _stub_router(monkeypatch, http)
+    isolated_config.api_first = False
+    result = await scrape("https://en.wikipedia.org/wiki/Dog", config=isolated_config)
+    assert http.fetched == ["https://en.wikipedia.org/wiki/Dog"]
+    assert result.via is None
+
+
+@pytest.mark.asyncio
+async def test_force_tier_bypasses_api_first(isolated_config, monkeypatch):
+    http = RecordingHttp()
+    _stub_router(monkeypatch, http)
+    result = await scrape(
+        "https://en.wikipedia.org/wiki/Cat", config=isolated_config, force_tier=Tier.HTTP
+    )
+    assert http.fetched == ["https://en.wikipedia.org/wiki/Cat"]
+    assert result.via is None
+
+
+@pytest.mark.asyncio
+async def test_non_provider_url_is_untouched(isolated_config, monkeypatch):
+    http = RecordingHttp()
+    _stub_router(monkeypatch, http)
+    result = await scrape("https://example.com/", config=isolated_config)
+    assert http.fetched == ["https://example.com/"]
+    assert result.via is None
 
 
 @pytest.mark.asyncio

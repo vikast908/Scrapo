@@ -18,6 +18,7 @@ from pydantic import BaseModel
 
 from scrapo.access.actions import Action, coerce_actions
 from scrapo.access.adapters.base import ProxyAdapter
+from scrapo.access.api_providers import ApiRequest, resolve_api
 from scrapo.access.router import TierRouter
 from scrapo.config import Config, get_config
 from scrapo.crawl.batch import BatchItem
@@ -67,6 +68,7 @@ async def scrape(
     force_tier: Tier | None = None,
     actions: list[Action | dict[str, Any]] | None = None,
     main_content: bool | None = None,
+    api_first: bool | None = None,
     router: TierRouter | None = None,
     selector_cache: SelectorCache | None = None,
     replay: ReplayStore | None = None,
@@ -83,6 +85,12 @@ async def scrape(
     :func:`crawl`) can share one instance of each across many pages instead of
     rebuilding them — and re-running their schema setup — on every call. When not
     provided they are constructed here as before.
+
+    For sites with a clean public API (Wikipedia and its Wikimedia sister
+    projects), Scrapo fetches that API instead of the bot-walled page — before any
+    tier is tried. The result then carries ``via="api:<provider>"``. This is on by
+    default; pass ``api_first=False`` (or set ``force_tier`` / ``actions``, or
+    ``screenshot=True``) to scrape the real page instead.
     """
     cfg = config or get_config()
     coerced_actions = coerce_actions(actions) if actions else None
@@ -91,6 +99,17 @@ async def scrape(
         # agent tier (this also disables the conditional-GET fast path below).
         force_tier = force_tier or Tier.AGENT
     use_main_content = cfg.main_content if main_content is None else main_content
+    # API-first: when a known site publishes the same content through a clean,
+    # unblockable public API, fetch that instead of the page — skipping the whole
+    # tier ladder. Suppressed when the caller forces a tier, drives the browser
+    # (actions imply force_tier above), or wants a screenshot of the live page.
+    use_api_first = cfg.api_first if api_first is None else api_first
+    api_req: ApiRequest | None = (
+        resolve_api(url)
+        if use_api_first and force_tier is None and not screenshot
+        else None
+    )
+    via = f"api:{api_req.provider}" if api_req is not None else None
     record = RunRecord.new(url)
     audit = audit or AuditLog(cfg.audit_log, enabled=cfg.audit_enabled)
     replay = replay or ReplayStore(cfg)
@@ -145,8 +164,19 @@ async def scrape(
     reused_html_path: str | None = None
     own_router = router is None
     router = router or TierRouter(cfg, proxy_adapter=proxy_adapter)
-    try:
-        fetch = await router.fetch(
+
+    async def _do_fetch(cond: Conditional | None) -> FetchResult:
+        # API-first hits the provider's endpoint directly at the HTTP tier (no
+        # escalation — these endpoints aren't bot-walled); everything else goes
+        # through the full tier ladder.
+        if api_req is not None:
+            return await router.http.fetch(
+                api_req.url,
+                tier=Tier.HTTP,
+                extra_headers=api_req.headers or None,
+                conditional=cond,
+            )
+        return await router.fetch(
             url,
             budget=budget,
             wait_for=wait_for,
@@ -154,8 +184,11 @@ async def scrape(
             storage_state=storage_state,
             force_tier=force_tier,
             actions=coerced_actions,
-            conditional=conditional,
+            conditional=cond,
         )
+
+    try:
+        fetch = await _do_fetch(conditional)
         if fetch.not_modified:
             prior_html = await replay.load_html(prior["run_id"]) if prior is not None else None
             if prior is not None and prior_html is not None:
@@ -175,15 +208,10 @@ async def scrape(
                     not_modified=True,
                 )
             else:  # archived body is gone — fetch it for real
-                fetch = await router.fetch(
-                    url,
-                    budget=budget,
-                    wait_for=wait_for,
-                    screenshot=screenshot,
-                    storage_state=storage_state,
-                    force_tier=force_tier,
-                    actions=coerced_actions,
-                )
+                fetch = await _do_fetch(None)
+        if api_req is not None:
+            # Present the page the caller asked for, not the API endpoint we hit.
+            fetch.final_url = url
     finally:
         if own_router:
             await router.aclose()
@@ -221,7 +249,10 @@ async def scrape(
     extraction: ExtractionResult | None = None
     if schema is not None:
         cache = selector_cache or SelectorCache(cfg.selector_cache_db)
-        extractor = HybridExtractor(cache, llm=llm_adapter, pin=pin, strict_pin=strict_pin)
+        extractor = HybridExtractor(
+            cache, llm=llm_adapter, pin=pin, strict_pin=strict_pin,
+            use_metadata=cfg.metadata_extraction,
+        )
         extraction = await extractor.extract(
             url=url,
             html=fetch.html,
@@ -260,12 +291,13 @@ async def scrape(
         run_id=record.run_id,
         url=url,
         tier=fetch.tier_used.label,
+        via=via,
         status=fetch.status,
         method=extraction.method if extraction else "none",
         not_modified=fetch.not_modified,
     )
 
-    return _build_result(record, fetch, document, extraction)
+    return _build_result(record, fetch, document, extraction, via=via)
 
 
 async def extract(
@@ -282,7 +314,10 @@ async def extract(
     cfg = config or get_config()
     document = shape_document(html, url)
     cache = SelectorCache(cfg.selector_cache_db)
-    extractor = HybridExtractor(cache, llm=llm_adapter, pin=pin, strict_pin=strict_pin)
+    extractor = HybridExtractor(
+        cache, llm=llm_adapter, pin=pin, strict_pin=strict_pin,
+        use_metadata=cfg.metadata_extraction,
+    )
     return await extractor.extract(
         url=url, html=html, markdown=document.markdown, model=schema
     )
@@ -547,6 +582,8 @@ def _build_result(
     fetch: FetchResult,
     document: ChunkedDocument,
     extraction: ExtractionResult | None,
+    *,
+    via: str | None = None,
 ) -> ScrapeResult:
     extraction_view: ExtractionView | None = None
     if extraction is not None:
@@ -567,6 +604,7 @@ def _build_result(
         url=fetch.final_url,
         status=fetch.status,
         tier_used=fetch.tier_used.label,
+        via=via,
         proxy_region=fetch.proxy_region,
         blocked=fetch.blocked,
         block_reason=fetch.block_reason,

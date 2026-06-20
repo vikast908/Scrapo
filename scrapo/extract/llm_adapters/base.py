@@ -49,6 +49,13 @@ def get_default(provider: str | None = None, model_id: str | None = None) -> LLM
             return OpenAIAdapter(model_id=model_id)
         except ImportError:
             pass
+    if provider == "deepseek":
+        try:
+            from scrapo.extract.llm_adapters.deepseek_adapter import DeepSeekAdapter
+
+            return DeepSeekAdapter(model_id=model_id)
+        except ImportError:
+            pass
     if provider == "gemini":
         try:
             from scrapo.extract.llm_adapters.gemini_adapter import GeminiAdapter

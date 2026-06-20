@@ -189,7 +189,7 @@ class ChunkedDocument:
         return sum(len(c.text) for c in self.chunks) // 4
 
 
-ExtractionMethod = Literal["selector", "llm", "hybrid", "none"]
+ExtractionMethod = Literal["selector", "llm", "hybrid", "metadata", "none"]
 
 
 @dataclass(slots=True)

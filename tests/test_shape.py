@@ -3,6 +3,27 @@ from scrapo.shape.markdown import to_markdown
 from scrapo.shape.provenance import dedup_chunks, shape_document
 
 
+def test_title_survives_main_content_extraction():
+    # Regression: main_content strips the <head>, so the title must come from the
+    # original document (here via og:title) rather than being lost.
+    html = (
+        "<html><head><title>Headline | Example News</title>"
+        "<meta property='og:title' content='The Real Headline'></head>"
+        "<body><nav>menu</nav><article><h1>The Real Headline</h1>"
+        "<p>" + ("Body sentence number one is reasonably long. " * 12) + "</p>"
+        "</article><footer>junk</footer></body></html>"
+    )
+    doc = shape_document(html, "https://news.example.com/x", main_content=True)
+    assert doc.title == "The Real Headline"  # og:title preferred over <title>
+    assert "Body sentence" in doc.markdown
+
+
+def test_title_falls_back_to_h1_when_no_title_tag():
+    html = "<html><body><article><h1>Just an H1</h1><p>" + ("text " * 60) + "</p></article></body></html>"
+    doc = shape_document(html, "https://example.com/y", main_content=True)
+    assert doc.title == "Just an H1"
+
+
 def test_markdown_strips_nav_keeps_headings(sample_html):
     doc = to_markdown(sample_html)
     md = doc.markdown

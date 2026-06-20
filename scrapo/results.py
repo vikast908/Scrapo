@@ -54,6 +54,7 @@ class ScrapeResult(_Mappingish):
     url: str
     status: int | None = None
     tier_used: str | None = None
+    via: str | None = None  # "api:<provider>" when served from a site's public API instead of the page
     proxy_region: str | None = None
     blocked: bool = False
     block_reason: str | None = None

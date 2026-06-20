@@ -6,6 +6,100 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [Unreleased]
+
+### Added
+
+- **API-first resolution** (`scrapo/access/api_providers.py`): when a URL belongs
+  to a site that publishes the same content through a clean, unauthenticated
+  public API, Scrapo fetches that API *instead of* the page — **before** the tier
+  router runs, so the whole HTTP → browser → stealth → agent escalation (and the
+  bot wall that defeats it) is skipped. The motivating case is Wikipedia, which
+  CAPTCHAs scrapers on every page yet serves every article through its REST API
+  (`/api/rest_v1/page/html/{title}`); the same contract covers its Wikimedia
+  sister projects (Wiktionary, Wikinews, Wikibooks, Wikiquote, Wikiversity,
+  Wikivoyage, Wikisource). The REST HTML flows through the normal markdown / chunk
+  / extraction pipeline untouched, and conditional-GET / replay still apply. The
+  result reports `via="api:<provider>"` and presents the original page URL (not the
+  endpoint). On by default; `Config(api_first=False)`, `SCRAPO_API_FIRST=0`, the
+  `scrape(api_first=False)` / `--no-api-first` per-call override, or any of
+  `force_tier` / `actions` / `screenshot` turns it off for that call. Surfaced to
+  agents: the `scrapo_scrape` MCP tool documents it and accepts an `api_first`
+  argument. The provider registry is a plain tuple — adding a site is a few lines.
+- **DeepSeek LLM adapter** (`scrapo/extract/llm_adapters/deepseek_adapter.py`):
+  DeepSeek speaks the OpenAI wire protocol, so the adapter reuses the `openai`
+  async client pointed at `https://api.deepseek.com` and uses JSON-object mode
+  (DeepSeek does not support OpenAI's strict `json_schema`). Select it with
+  `SCRAPO_LLM_ADAPTER=deepseek`; configure with `DEEPSEEK_API_KEY`,
+  `SCRAPO_DEEPSEEK_MODEL` (default `deepseek-v4-flash`; `deepseek-chat` /
+  `deepseek-reasoner` are deprecated and map to its non-thinking / thinking modes),
+  and `DEEPSEEK_BASE_URL`. Needs the `scrapo[openai]` extra (the OpenAI client).
+
+
+## [0.9.0] - 2026-06-20
+
+Capability release: a zero-LLM extraction rung that reads embedded structured
+data, a synchronous facade over the whole async API, JSONL/CSV exporters, two
+auto-pagination action verbs, a persistent watch control plane, and a real
+browser integration test suite. No breaking changes to the public API.
+
+### Added
+
+- **Embedded structured-data extraction** (`scrapo/extract/metadata.py`): a new,
+  free rung that runs *before* the selector cache and the LLM. When a page already
+  carries its fields in JSON-LD (`<script type="application/ld+json">`), OpenGraph
+  / Twitter / vertical `<meta>` tags, or microdata `itemprop` attributes, Scrapo
+  satisfies the Pydantic schema straight from that data: deterministic, zero
+  tokens, no selector drift. It is conservative (it only returns when every
+  required field was sourced and the object validates) and otherwise falls through
+  to the existing selector / LLM path, so it never costs correctness. The result
+  carries `method="metadata"`. On by default; `Config(metadata_extraction=False)`
+  or `SCRAPO_METADATA_EXTRACTION=0` turns it off. The bare `<title>` tag is
+  deliberately not treated as a source (it is page chrome, not a structured
+  annotation).
+- **Synchronous API** (`scrapo/sync.py`): `scrape_sync`, `extract_sync`,
+  `crawl_sync`, `map_site_sync`, and `batch_scrape_sync` wrap their async twins
+  for scripts, notebooks, and other non-async callers. Each preserves the exact
+  signature of its async counterpart and drives it to completion; it also works
+  when called from inside an already-running event loop (e.g. a Jupyter cell) by
+  running on a worker thread. Re-exported from `scrapo`.
+- **Output exporters** (`scrapo/export.py`): `to_jsonl()` and `to_csv()` turn a
+  list of `ScrapeResult` / `BatchItem` into a dataset file (an errored batch item
+  becomes a row with its `error` set). The CSV flattens each record's top-level
+  extraction fields into columns; nested values are JSON-encoded into the cell.
+  Wired into the CLI: `scrapo batch --out-jsonl / --out-csv` and `scrapo crawl
+  --out-jsonl / --out-csv`.
+- **Auto-pagination actions**: two new deterministic `Interact` verbs.
+  `scroll_until` keeps scrolling until the page (or a given `selector`'s match
+  count) stops growing, for infinite scroll; `click_until` repeatedly clicks a
+  "load more" button until it disappears. Both are bounded by a `times` round cap
+  so a genuinely endless feed cannot loop forever
+  (`scrapo/access/actions.py`).
+- **Watch control plane** (`scrapo/server/`): the self-hosted scheduler engine the
+  library had until now intentionally left out. `WatchStore` persists a list of
+  watches in SQLite; `WatchScheduler` runs the due ones on their intervals
+  (re-scrape plus field diff, kept cheap by conditional GET) and fires a
+  `Notifier` on change; `WebhookNotifier` POSTs a JSON change payload and
+  `CallbackNotifier` invokes an in-process function. CLI: `scrapo watch-add`,
+  `watch-list`, `watch-remove`, `watch-run`. A multi-tenant web console with auth
+  is still a separate deployable app built on top of this engine, not part of the
+  library.
+- **Real-browser integration suite** (`tests/integration/`): a `pytest -m
+  integration` suite that launches a real headless Chromium against a local
+  fixture server and exercises the browser tier, the new auto-pagination actions,
+  and the end-to-end metadata path. Deselected by default so the standard suite
+  stays fully offline; a dedicated CI job installs Chromium and runs it.
+- New config / env vars: `metadata_extraction` / `SCRAPO_METADATA_EXTRACTION`,
+  `watch_poll_seconds` / `SCRAPO_WATCH_POLL`; new `Config.watch_db` path. New
+  exports from `scrapo`: `scrape_sync`, `extract_sync`, `crawl_sync`,
+  `map_site_sync`, `batch_scrape_sync`.
+
+### Notes
+
+- The fully-offline test suite grew from 280 to 321 tests (no network, no paid
+  LLM, real browser excluded), and the codebase stays `ruff` and `mypy --strict`
+  clean. The real-browser suite runs separately under `pytest -m integration`.
+
 ## [0.8.0] - 2026-06-19
 
 Capability + correctness release: main-content extraction, site mapping,
@@ -367,6 +461,7 @@ Initial public release.
 - The `robots.txt` gate is opt-in: set `SCRAPO_RESPECT_ROBOTS=1` (or `Config(respect_robots=True)`) to enable it. You are responsible for complying with each site's terms of use and applicable law.
 - Alpha status: the public API and core subsystems are stable, but the T4 agent driver, full action caching, an S3 snapshot adapter, and a hosted control plane are intentionally lightweight or not yet implemented.
 
+[0.9.0]: https://github.com/vikast908/Scrapo/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/vikast908/Scrapo/compare/v0.7.1...v0.8.0
 [0.7.1]: https://github.com/vikast908/Scrapo/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/vikast908/Scrapo/compare/v0.6.0...v0.7.0

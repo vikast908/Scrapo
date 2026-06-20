@@ -19,11 +19,13 @@ from scrapo.types import Budget, Tier
 async def _scrapo_scrape(args: dict[str, Any]) -> dict[str, Any]:
     max_tier = Tier(int(args.get("max_tier", 2)))
     budget = Budget(max_tier=max_tier)
+    api_first = args.get("api_first")
     result = await scrape(
         args["url"],
         budget=budget,
         wait_for=args.get("wait_for"),
         screenshot=bool(args.get("screenshot", False)),
+        api_first=None if api_first is None else bool(api_first),
     )
     payload = result.model_dump(mode="json")
     if args.get("diff_last") and not result.blocked:

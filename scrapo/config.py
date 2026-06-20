@@ -32,6 +32,8 @@ class Config:
     enable_pii_filter: bool = False
     redact_snapshots: bool = False
     main_content: bool = False  # strip boilerplate (nav/sidebar/footer) before markdown
+    metadata_extraction: bool = True  # satisfy schemas from embedded JSON-LD/OG/microdata first
+    api_first: bool = True  # for known sites (Wikipedia/Wikimedia), fetch their public API instead of the page
     audit_enabled: bool = True
     snapshot_html: bool = True
     snapshot_backend: str = "local"  # "local" or "s3://bucket/prefix"
@@ -45,6 +47,7 @@ class Config:
     proxy_cooldown_seconds: float = 120.0  # how long a parked proxy stays out of rotation
     agent_driver: str | None = None  # "llm" to use the built-in LLMAgentDriver at tier 4
     agent_action_cache: bool = True  # record/replay agent action sequences at tier 4
+    watch_poll_seconds: float = 30.0  # how often the watch scheduler wakes to check due watches
     llm_adapter: str | None = "anthropic"
     llm_model: str = "claude-opus-4-7"
     geo: str | None = None
@@ -60,6 +63,10 @@ class Config:
         if self.proxy_cooldown_seconds < 0:
             raise ValueError(
                 f"proxy_cooldown_seconds must be >= 0, got {self.proxy_cooldown_seconds}"
+            )
+        if self.watch_poll_seconds <= 0:
+            raise ValueError(
+                f"watch_poll_seconds must be positive, got {self.watch_poll_seconds}"
             )
         try:
             self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -86,6 +93,10 @@ class Config:
         return self.data_dir / "agent_actions.sqlite"
 
     @property
+    def watch_db(self) -> Path:
+        return self.data_dir / "watches.sqlite"
+
+    @property
     def audit_log(self) -> Path:
         return self.data_dir / "audit.log"
 
@@ -105,6 +116,8 @@ class Config:
             enable_pii_filter=os.environ.get("SCRAPO_PII_FILTER", "0") == "1",
             redact_snapshots=os.environ.get("SCRAPO_REDACT_SNAPSHOTS", "0") == "1",
             main_content=os.environ.get("SCRAPO_MAIN_CONTENT", "0") == "1",
+            metadata_extraction=os.environ.get("SCRAPO_METADATA_EXTRACTION", "1") == "1",
+            api_first=os.environ.get("SCRAPO_API_FIRST", "1") == "1",
             snapshot_backend=os.environ.get("SCRAPO_SNAPSHOT_BACKEND", "local"),
             browser_block_resources=os.environ.get("SCRAPO_BROWSER_BLOCK_RESOURCES", "1") == "1",
             browser_capture_xhr=os.environ.get("SCRAPO_BROWSER_CAPTURE_XHR", "1") == "1",
@@ -116,6 +129,7 @@ class Config:
             proxy_cooldown_seconds=_env_float("SCRAPO_PROXY_COOLDOWN", 120.0),
             agent_driver=os.environ.get("SCRAPO_AGENT_DRIVER") or None,
             agent_action_cache=os.environ.get("SCRAPO_AGENT_ACTION_CACHE", "1") == "1",
+            watch_poll_seconds=_env_float("SCRAPO_WATCH_POLL", 30.0),
             llm_adapter=os.environ.get("SCRAPO_LLM_ADAPTER", "anthropic"),
             llm_model=os.environ.get("SCRAPO_LLM_MODEL", "claude-opus-4-7"),
             geo=os.environ.get("SCRAPO_GEO") or None,

@@ -39,7 +39,7 @@ Scrapo is a Python library that fuses four worlds the rest of the market keeps s
 </td>
 <td align="center" width="25%">
 
-**Managed access**<br>*proxies, anti-bot, geo*
+**Managed access**<br>*api-first, proxies, anti-bot*
 
 </td>
 </tr>
@@ -96,15 +96,18 @@ Plus a feature nobody else ships: **deterministic replay** of every fetch, so ex
 
 ```
 scrapo/
-├── access/      # (1) 5-tier router + pooled browser + request interception + agent driver + action cache + proxy adapters & rotating pool
-├── extract/     # (2) hybrid selector + LLM (scalar & list fields), model pinning, cost-aware budget
+├── access/      # (1) 5-tier router + pooled browser + request interception + agent driver + action cache + proxy adapters & rotating pool + Interact actions (incl. scroll_until / click_until)
+├── extract/     # (2) embedded metadata (JSON-LD/OG/microdata) + hybrid selector + LLM (scalar & list fields), model pinning, cost-aware budget
 ├── shape/       # (3) markdown + heading chunker + content-type dispatch (HTML / JSON / feed / PDF / text)
 ├── replay/      # (4) SQLite metadata + pluggable snapshot store (local or S3) + field-level diff
 ├── policy/      # (5) robots, PII (flag or redact), geo, append-only audit
-├── crawl/       # persistent SQLite queue + async scheduler + sitemap discovery + rel=next pagination
+├── crawl/       # persistent SQLite queue + async scheduler + sitemap discovery + rel=next pagination + batch
 ├── agent/       # (6) MCP server + tool schemas
+├── server/      # (7) self-hosted watch control plane: persistent WatchStore + WatchScheduler + webhook/callback notifiers
 ├── results.py   # typed ScrapeResult / CrawlResult / ExtractionView
 ├── watch.py     # watch(url) -> Watch.refresh() -> ChangeSet (change tracking)
+├── export.py    # to_jsonl / to_csv dataset writers
+├── sync.py      # synchronous facade (scrape_sync / crawl_sync / ...)
 ├── security.py  # SSRF guard for fetch targets
 ├── _db.py       # tuned SQLite connections (WAL, busy timeout)
 ├── logging.py   # structlog setup for the CLI / MCP server
@@ -196,7 +199,25 @@ scrapo diff <run_a> <run_b>    # field-level diff
 | **T3** `BROWSER_STEALTH` | + stealth + residential proxy | hard anti-bot |
 | **T4** `AGENT` | LLM-driven multi-step browser via a pluggable `AgentDriver` (a reference `LLMAgentDriver` ships in; `SCRAPO_AGENT_DRIVER=llm`), with **action caching** so a repeated goal replays without the LLM | logins, captchas, flows |
 
+Before T0, **API-first resolution** (see the feature section below) short-circuits the whole ladder for known sites (e.g. Wikipedia → its REST API), so the cheapest path of all is one the tier router never sees.
+
 Escalation triggers: Cloudflare/Akamai/PerimeterX/DataDome/Distil fingerprints, HTTP `403 / 429 / 503`, empty body, missing required schema fields, and unrendered single-page-app shells (lots of script, almost no rendered text). `Budget(max_tier=..., max_llm_calls=..., max_cost_usd=...)` caps how far it goes. The browser tiers block images/fonts/media/css by default and capture JSON XHR/fetch responses onto the result. The Tier-4 driver records the action sequence it used to reach a goal on a host (`agent_actions.sqlite`) and replays it on later runs with zero LLM tokens, self-healing back to the model only when a recorded step no longer applies (`SCRAPO_AGENT_ACTION_CACHE=0` to disable).
+
+</details>
+
+<details>
+<summary><b>API-first: known sites resolve to their public API</b></summary>
+
+Some sites CAPTCHA every scraper yet publish the *same* content through a clean, unauthenticated API. When Scrapo recognises such a URL it fetches the API **before** the tier router runs — skipping the whole HTTP → browser → stealth → agent escalation and the bot wall that defeats it. Wikipedia is the headline case: it blocks scrapers aggressively but serves every article through its REST API (`/api/rest_v1/page/html/{title}`), and the same contract covers its Wikimedia sister projects (Wiktionary, Wikinews, Wikibooks, Wikiquote, Wikiversity, Wikivoyage, Wikisource).
+
+```python
+r = scrape_sync("https://en.wikipedia.org/wiki/Albert_Einstein")
+r.via        # "api:wikipedia"  — served from the REST API, no CAPTCHA, no browser
+r.url        # "https://en.wikipedia.org/wiki/Albert_Einstein"  — the page you asked for
+r.markdown   # clean article text, through the normal markdown/chunk/extraction pipeline
+```
+
+The REST HTML runs through the same markdown / chunk / provenance / extraction pipeline as any page, and conditional-GET + replay still apply. On by default; turn it off per call with `scrape(api_first=False)` (CLI `--no-api-first`, MCP `api_first=false`) or globally with `SCRAPO_API_FIRST=0`. It's also suppressed automatically whenever you force a tier, pass `actions`, or ask for a `screenshot` — i.e. when you explicitly want the live page. Agents get this for free: the `scrapo_scrape` MCP tool documents it and the result's `via` field reports when it fired. The provider registry (`scrapo/access/api_providers.py`) is a plain tuple, so adding a site is a few lines.
 
 </details>
 
@@ -212,6 +233,25 @@ A URL is not always an HTML page, so `scrape()` dispatches on `Content-Type` (wi
 | RSS / Atom | a markdown list of entries; parsed items on `result.data` | `feed` |
 | `application/pdf` | extracted text (requires `pip install "scrapo[pdf]"`) | `pdf` |
 | `text/plain` | the body verbatim | `text` |
+
+</details>
+
+<details>
+<summary><b>Zero-LLM extraction from embedded structured data</b></summary>
+
+Before the selector cache or the LLM, Scrapo tries to satisfy your schema straight from data the page already hands out: schema.org JSON-LD (`<script type="application/ld+json">`), OpenGraph / Twitter / vertical `<meta>` tags, and microdata `itemprop` attributes. A huge fraction of commercial pages (products, articles, recipes, jobs, events) embed this, so the common case becomes free, deterministic, and immune to layout drift.
+
+```python
+class Product(BaseModel):
+    name: str
+    price: str | None = None
+
+res = await scrapo.scrape("https://shop.example.com/widget", schema=Product)
+print(res.extraction.method)   # 'metadata'  (no selector cache, no LLM)
+print(res.cost_usd)            # 0.0
+```
+
+The extraction ladder is now: **embedded metadata -> selector cache -> LLM**. It is conservative: it only returns when every required field was sourced and the object validates, otherwise it falls through to the existing path, so it never costs correctness. The bare `<title>` tag is not treated as a source (it is page chrome, not a structured annotation). On by default; `Config(metadata_extraction=False)` or `SCRAPO_METADATA_EXTRACTION=0` disables it.
 
 </details>
 
@@ -386,7 +426,75 @@ res = await scrapo.scrape(
 )
 ```
 
-Supported actions: `goto, click, type, fill, press, scroll, wait, wait_for_selector, screenshot`. Each `goto` target is checked by the SSRF guard. Passing `actions` routes straight to a browser session and works with **no agent driver configured**. For open-ended, model-driven flows, the Tier-4 `AgentDriver` (with token-free action replay) still applies.
+Supported actions: `goto, click, type, fill, press, scroll, scroll_until, click_until, wait, wait_for_selector, screenshot`. Each `goto` target is checked by the SSRF guard. Passing `actions` routes straight to a browser session and works with **no agent driver configured**. For open-ended, model-driven flows, the Tier-4 `AgentDriver` (with token-free action replay) still applies.
+
+**Auto-pagination.** Two verbs handle the common "there's more content below" cases without you scripting a fixed number of steps:
+
+```python
+# Infinite scroll: keep scrolling until the .item count stops growing (bounded by `times`).
+actions=[{"type": "scroll_until", "selector": ".item", "times": 10}]
+
+# Click-to-load: keep clicking "Load more" until the button disappears.
+actions=[{"type": "click_until", "selector": "button.load-more"}]
+```
+
+Both are bounded by a `times` round cap so a genuinely endless feed cannot loop forever; `scroll_until` stops early the first round that adds nothing new.
+
+</details>
+
+<details>
+<summary><b>Synchronous API (scripts and notebooks)</b></summary>
+
+Scrapo is async at its core, but you don't have to be. Every buffered entry point has a `*_sync` twin with the identical signature:
+
+```python
+import scrapo
+
+res = scrapo.scrape_sync("https://example.com/")
+items = scrapo.batch_scrape_sync(["https://a.com/", "https://b.com/"])
+```
+
+`scrape_sync`, `extract_sync`, `crawl_sync`, `map_site_sync`, and `batch_scrape_sync` run the coroutine to completion. They even work inside an already-running event loop (e.g. a Jupyter cell) by using a worker thread, so you never see "asyncio.run() cannot be called from a running event loop". The streaming generators (`crawl_stream` / `batch_scrape_stream`) stay async-only by design.
+
+</details>
+
+<details>
+<summary><b>Export results to JSONL / CSV</b></summary>
+
+Turn a batch or crawl into a dataset file with no glue code:
+
+```python
+from scrapo.export import to_jsonl, to_csv
+
+items = await scrapo.batch_scrape(urls, schema=Product)
+to_jsonl(items, "out.jsonl")          # one JSON object per line
+to_csv(items, "out.csv")              # flat table; extraction fields become columns
+```
+
+An errored batch item becomes a row with its `error` set; nested extraction values are JSON-encoded into the CSV cell. Also on the CLI: `scrapo batch ... --out-jsonl out.jsonl --out-csv out.csv` and `scrapo crawl ... --out-jsonl pages.jsonl`.
+
+</details>
+
+<details>
+<summary><b>Watch control plane (self-hosted)</b></summary>
+
+`watch()` is in-process. When you want a *list* of watches that runs on a schedule, survives restarts, and fires alerts, `scrapo.server` is the engine:
+
+```python
+from scrapo.server import WatchStore, WatchScheduler, WebhookNotifier
+
+store = WatchStore(cfg.watch_db)
+sched = WatchScheduler(store, notifier=WebhookNotifier())
+await sched.add(
+    "https://example.com/pricing",
+    interval_seconds=3600,
+    webhook_url="https://hooks.example/scrapo",
+    schema=Pricing,
+)
+await sched.run_forever()              # tick, check due watches, POST on change
+```
+
+`WatchStore` persists watch definitions in SQLite; `WatchScheduler` re-checks the due ones (re-scrape plus field diff, kept cheap by conditional GET) and, on a change, calls a `Notifier` (`WebhookNotifier` POSTs a JSON payload; `CallbackNotifier` calls your function). Manage it from the CLI: `scrapo watch-add`, `watch-list`, `watch-remove`, `watch-run`. A full multi-tenant web console with auth is a separate deployable app built on top of this engine, not part of the library.
 
 </details>
 
@@ -461,9 +569,10 @@ Pass `upstream=BrightDataAdapter()` to `ProxyPool` to fall back to a managed gat
 | Anthropic Claude | `anthropic` (default) | `pip install "scrapo[anthropic]"` | `claude-opus-4-7` |
 | OpenAI | `openai` | `pip install "scrapo[openai]"` | `gpt-4o-mini` |
 | Google Gemini | `gemini` | `pip install "scrapo[gemini]"` | `gemini-2.5-flash` |
+| DeepSeek | `deepseek` | `pip install "scrapo[openai]"` | `deepseek-v4-flash` |
 | Mock (offline) | `mock` (tests) | always available | n/a |
 
-Anthropic adapter uses **prompt caching** on the schema block, so repeated extractions against the same Pydantic schema are cheap.
+Select a provider with `SCRAPO_LLM_ADAPTER` (e.g. `SCRAPO_LLM_ADAPTER=deepseek`). The Anthropic adapter uses **prompt caching** on the schema block, so repeated extractions against the same Pydantic schema are cheap. DeepSeek speaks the OpenAI wire protocol, so it rides the same `openai` client (pointed at `https://api.deepseek.com`) and uses JSON-object mode.
 
 </details>
 
@@ -478,11 +587,15 @@ scrapo crawl https://docs.python.org/3/ --max-depth 2 --max-pages 100
 scrapo map https://docs.python.org/3/ --max-depth 2 --out urls.txt   # discover URLs, no scrape
 scrapo batch https://a.com/ https://b.com/ --main-content              # scrape a list concurrently
 scrapo scrape https://example.com/ --main-content                     # strip boilerplate
+scrapo batch https://a.com/ https://b.com/ --out-jsonl out.jsonl       # scrape a list, export JSONL
 scrapo list --limit 10
 scrapo replay <run_id>
 scrapo diff <run_a> <run_b>
 scrapo audit                    # tail the append-only audit log
 scrapo adapters                 # list registered proxy adapters
+scrapo watch-add https://example.com/pricing --interval 3600 --webhook https://hooks.example/x
+scrapo watch-list               # list persisted watches
+scrapo watch-run                # run the watch scheduler loop (POSTs on change)
 scrapo serve                    # local browser UI at http://127.0.0.1:8787
 scrapo mcp                      # run the MCP server over stdio
 ```
@@ -491,12 +604,14 @@ scrapo mcp                      # run the MCP server over stdio
 
 ## Use as an MCP server
 
-Scrapo ships an MCP server exposing five tools to any MCP-compatible client (Claude Code, Claude Desktop, Cursor, and others):
+Scrapo ships an MCP server exposing seven tools to any MCP-compatible client (Claude Code, Claude Desktop, Cursor, and others):
 
 ```
 scrapo_scrape    scrapo_crawl    scrapo_map    scrapo_batch
 scrapo_replay    scrapo_diff     scrapo_list_runs
 ```
+
+For agents this is the path of least resistance: hand `scrapo_scrape` a URL and it returns clean markdown + provenance-tagged chunks, re-scrapes come back fast via conditional GET, and **known sites with a public API (Wikipedia and its Wikimedia sister projects) are auto-routed through that API** — so a Wikipedia URL just works with no CAPTCHA and no `max_tier` tuning, and the result reports `via="api:wikipedia"`.
 
 ```bash
 pip install "scrapo[mcp]"
@@ -536,6 +651,9 @@ Every default is overridable via env var:
 | `SCRAPO_PII_FILTER` | `0` | `1` to flag PII in the audit log |
 | `SCRAPO_REDACT_SNAPSHOTS` | `0` | `1` to redact PII from stored snapshots/markdown/chunks |
 | `SCRAPO_MAIN_CONTENT` | `0` | `1` to strip boilerplate (nav/sidebar/footer/ads) before markdown |
+| `SCRAPO_METADATA_EXTRACTION` | `1` | `0` to disable the zero-LLM JSON-LD/OpenGraph/microdata extraction rung |
+| `SCRAPO_API_FIRST` | `1` | `0` to disable API-first resolution (e.g. Wikipedia → its REST API) |
+| `SCRAPO_WATCH_POLL` | `30` | how often (s) `scrapo watch-run` wakes to check for due watches |
 | `SCRAPO_ALLOW_PRIVATE_HOSTS` | `0` | `1` to allow fetching private/loopback addresses |
 | `SCRAPO_SNAPSHOT_BACKEND` | `local` | `local` or `s3://bucket/prefix` |
 | `SCRAPO_BROWSER_BLOCK_RESOURCES` | `1` | `0` to let the browser tier load images/fonts/media/css |
@@ -545,14 +663,17 @@ Every default is overridable via env var:
 | `SCRAPO_PROXY_ADAPTER` | unset | default registered adapter name |
 | `SCRAPO_PROXY_URLS` | unset | comma-separated proxy URLs for the rotating pool (used when no adapter is set) |
 | `SCRAPO_PROXY_COOLDOWN` | `120` | seconds a parked proxy stays out of rotation |
-| `SCRAPO_LLM_ADAPTER` | `anthropic` | default LLM provider |
+| `SCRAPO_LLM_ADAPTER` | `anthropic` | default LLM provider: `anthropic`, `openai`, `gemini`, or `deepseek` |
 | `SCRAPO_LLM_MODEL` | `claude-opus-4-7` | default model id |
+| `SCRAPO_DEEPSEEK_MODEL` | `deepseek-v4-flash` | model id for the DeepSeek adapter (e.g. `deepseek-v4-flash`, `deepseek-v4-pro`) |
+| `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | DeepSeek API base (override for a proxy/gateway) |
 | `SCRAPO_GEO` | unset | default proxy region |
 | `SCRAPO_LOG_LEVEL` | `INFO` | log level for the CLI / MCP server |
 | `SCRAPO_LOG_FORMAT` | `console` | `console` or `json` |
 | `ANTHROPIC_API_KEY` | unset | for the Claude adapter |
 | `OPENAI_API_KEY` | unset | for the OpenAI adapter |
 | `GEMINI_API_KEY` | unset | for the Gemini adapter |
+| `DEEPSEEK_API_KEY` | unset | for the DeepSeek adapter |
 
 ---
 
@@ -560,12 +681,19 @@ Every default is overridable via env var:
 
 ```bash
 pip install -e ".[dev]"
-pytest -q
+pytest -q                     # 321 fully-offline tests
 ruff check .
 mypy scrapo/
+
+# real-browser end-to-end tests (separate; needs Chromium)
+pip install -e ".[dev,browser]"
+playwright install chromium
+pytest -m integration
 ```
 
-The suite is **fully offline**; no test hits the network or a paid LLM. It covers signals (including SPA-shell detection), SSRF, the HTTP retry path, conditional GET / 304-archive reuse, `watch()` change tracking and `crawl_stream`, shape, extract (cache eviction, budget, cost), replay (and the schema migration), policy, dedup, queue, router, proxy adapters and the rotating pool (rotation, cooldown, hard vs. soft failures, upstream fallback, the tier feedback loop), the agent driver and its action cache (record / replay / self-heal / eviction with fake page + scripted LLM), the local web UI, config, and end-to-end scrape with monkeypatched fetchers.
+The default suite is **fully offline**; no test hits the network or a paid LLM. It covers embedded-metadata extraction (JSON-LD / OpenGraph / microdata), the synchronous facade, the JSONL/CSV exporters, the auto-pagination actions (`scroll_until` / `click_until`), the watch control plane (store CRUD, scheduler ticks, notifier dispatch), signals (including SPA-shell detection), SSRF, the HTTP retry path, conditional GET / 304-archive reuse, `watch()` change tracking and `crawl_stream`, shape, extract (cache eviction, budget, cost), replay (and the schema migration), policy, dedup, queue, router, proxy adapters and the rotating pool (rotation, cooldown, hard vs. soft failures, upstream fallback, the tier feedback loop), the agent driver and its action cache (record / replay / self-heal / eviction with fake page + scripted LLM), the local web UI, config, and end-to-end scrape with monkeypatched fetchers.
+
+A separate `pytest -m integration` suite drives a real headless Chromium against a local fixture server to validate the browser tier, the auto-pagination actions, and the end-to-end metadata path (deselected by default; a dedicated CI job runs it).
 
 ---
 
@@ -577,7 +705,7 @@ Issues and PRs welcome. See [CONTRIBUTORS.md](CONTRIBUTORS.md) for the dev setup
 
 ## Project status
 
-Beta. The public API (`scrape`, `extract`, `crawl`, `crawl_stream`, `watch`, `map_site`, `batch_scrape`) is stable, as are tier escalation, model pinning, replay schema, typed results, list extraction, content-type routing, main-content extraction, the pluggable snapshot store, the rotating proxy pool, conditional requests, and the MCP tool surface. The reference Tier-4 agent driver (with action caching: record the steps to a goal, replay them token-free, self-heal back to the LLM when a step breaks) and the in-browser request interception are functional but lightly exercised (a real browser is needed to validate them end to end). The library roadmap is otherwise complete; the only thing intentionally left out is a hosted control plane (a scheduler that runs and persists a list of watches, sends alerts, and gives you a web console). That would be a separate deployable service rather than part of the library.
+Beta. The public API (`scrape`, `extract`, `crawl`, `crawl_stream`, `watch`, `map_site`, `batch_scrape`, plus the `*_sync` twins) is stable, as are tier escalation, model pinning, replay schema, typed results, embedded-metadata + list extraction, content-type routing, main-content extraction, the pluggable snapshot store, the rotating proxy pool, conditional requests, the JSONL/CSV exporters, and the MCP tool surface. The reference Tier-4 agent driver (with action caching: record the steps to a goal, replay them token-free, self-heal back to the LLM when a step breaks) and the in-browser request interception now have a real-browser integration suite (`pytest -m integration`) on top of the offline tests. The watch control plane (`scrapo.server`) ships the self-hosted scheduler engine: persist a list of watches, run them on a schedule, and POST a webhook on change. A full multi-tenant web console with auth is still a separate deployable app built on top of that engine, not part of the library.
 
 See [CHANGELOG.md](CHANGELOG.md) for release notes.
 

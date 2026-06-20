@@ -26,6 +26,7 @@ from pydantic import BaseModel, ValidationError
 from selectolax.parser import HTMLParser
 
 from scrapo.extract.llm_adapters.base import LLMAdapter, get_default
+from scrapo.extract.metadata import extract_from_metadata
 from scrapo.extract.pinning import PinnedModel, matches, require_pin
 from scrapo.extract.schema import list_fields, schema_hash, schema_to_jsonschema, schema_version
 from scrapo.extract.selector_cache import SelectorCache
@@ -74,11 +75,15 @@ class HybridExtractor:
         llm: LLMAdapter | None = None,
         pin: PinnedModel | None = None,
         strict_pin: bool = False,
+        use_metadata: bool = True,
     ) -> None:
         self.cache = cache
         self.llm = llm or get_default()
         self.pin = pin
         self.strict_pin = strict_pin
+        # Try embedded structured data (JSON-LD / OpenGraph / microdata) before the
+        # selector cache. It's free, deterministic, and never drifts.
+        self.use_metadata = use_metadata
 
     async def extract(
         self,
@@ -92,6 +97,22 @@ class HybridExtractor:
         require_pin(self.pin, strict=self.strict_pin)
         sh = schema_hash(model)
         sv = schema_version(model)
+
+        # Rung 0: embedded structured data. Free and exact when the page hands us
+        # the fields directly; only returns when every required field is sourced
+        # and the object validates, otherwise we fall through to selectors / LLM.
+        if self.use_metadata:
+            meta = extract_from_metadata(html, model)
+            if meta is not None:
+                used = {field: f"metadata:{src}" for field, src in meta.fields.items()}
+                log.info("scrapo.extract.metadata_hit", url=url, schema=sv, source=meta.source)
+                return ExtractionResult(
+                    data=meta.data,
+                    method="metadata",
+                    selectors_used=used,
+                    schema_version=sv,
+                    provenance=self._build_provenance(url, used),
+                )
 
         cached = await self.cache.get(url, sh)
         if cached:
