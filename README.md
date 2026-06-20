@@ -648,7 +648,7 @@ Every default is overridable via env var:
 | Variable | Default | Notes |
 |---|---|---|
 | `SCRAPO_DATA_DIR` | platform user-data dir | SQLite + snapshots + audit log |
-| `SCRAPO_USER_AGENT` | `scrapo/0.10.0` | UA for HTTP and robots |
+| `SCRAPO_USER_AGENT` | `scrapo/0.10.1` | UA for HTTP and robots |
 | `SCRAPO_TIMEOUT` | `30` | request timeout (s) |
 | `SCRAPO_CONCURRENCY` | `8` | crawl concurrency |
 | `SCRAPO_HTTP_RETRIES` | `2` | retries on 429/5xx/transport errors |

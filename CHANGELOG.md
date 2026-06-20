@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.10.1] - 2026-06-21
+
+### Changed
+
+- Docs: refreshed the architecture diagram to show API-first resolution, the
+  embedded-metadata extraction rung, and the model-agnostic LLM step; corrected
+  the `SCRAPO_USER_AGENT` default shown in the README. The default User-Agent
+  version string is bumped to `scrapo/0.10.1`. No code/behaviour changes to the
+  public API.
+
+
 ## [0.10.0] - 2026-06-20
 
 Model-agnostic LLM layer, API-first resolution for sites with public APIs, and

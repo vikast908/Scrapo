@@ -11,7 +11,7 @@ from platformdirs import user_data_dir
 from scrapo.types import Tier
 
 _APP_NAME = "scrapo"
-_DEFAULT_USER_AGENT = "scrapo/0.10.0 (+https://github.com/vikast908/Scrapo)"
+_DEFAULT_USER_AGENT = "scrapo/0.10.1 (+https://github.com/vikast908/Scrapo)"
 
 
 def _default_data_dir() -> Path:

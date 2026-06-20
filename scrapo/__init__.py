@@ -32,7 +32,7 @@ from scrapo.types import (
 )
 from scrapo.watch import ChangeSet, Watch, watch
 
-__version__ = "0.10.0"
+__version__ = "0.10.1"
 
 __all__ = [
     "Action",
