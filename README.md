@@ -77,9 +77,10 @@ Plus a feature nobody else ships: **deterministic replay** of every fetch, so ex
         +----------------------------+----------------------------+
         |                            |                            |
    (1) Tier Router            (2) Extractor             (3) Document Shaper
+   API-first (known APIs)     Embedded metadata (free)   Content-type dispatch
    T0 HTTP (retries)          Selector cache (host key)  HTML to Markdown
    T1 HTTP+session            -> if validation fails     Heading-aware chunks
-   T2 Browser                 LLM fallback (budgeted)    Per-chunk provenance
+   T2 Browser                 model-agnostic LLM         Per-chunk provenance
    T3 Browser+stealth         -> self-heal / evict       Cross-crawl dedup
    T4 Agent                   selector cache writeback
         |                            |                            |
@@ -96,8 +97,8 @@ Plus a feature nobody else ships: **deterministic replay** of every fetch, so ex
 
 ```
 scrapo/
-├── access/      # (1) 5-tier router + pooled browser + request interception + agent driver + action cache + proxy adapters & rotating pool + Interact actions (incl. scroll_until / click_until)
-├── extract/     # (2) embedded metadata (JSON-LD/OG/microdata) + hybrid selector + LLM (scalar & list fields), model pinning, cost-aware budget
+├── access/      # (1) API-first resolver (api_providers) + 5-tier router + pooled browser + request interception + agent driver + action cache + proxy adapters & rotating pool + Interact actions (incl. scroll_until / click_until)
+├── extract/     # (2) embedded metadata (JSON-LD/OG/microdata) + hybrid selector + model-agnostic LLM (Anthropic/Gemini native, any OpenAI-compatible endpoint), model pinning, cost-aware budget
 ├── shape/       # (3) markdown + heading chunker + content-type dispatch (HTML / JSON / feed / PDF / text)
 ├── replay/      # (4) SQLite metadata + pluggable snapshot store (local or S3) + field-level diff
 ├── policy/      # (5) robots, PII (flag or redact), geo, append-only audit
@@ -647,7 +648,7 @@ Every default is overridable via env var:
 | Variable | Default | Notes |
 |---|---|---|
 | `SCRAPO_DATA_DIR` | platform user-data dir | SQLite + snapshots + audit log |
-| `SCRAPO_USER_AGENT` | `scrapo/0.1` | UA for HTTP and robots |
+| `SCRAPO_USER_AGENT` | `scrapo/0.10.0` | UA for HTTP and robots |
 | `SCRAPO_TIMEOUT` | `30` | request timeout (s) |
 | `SCRAPO_CONCURRENCY` | `8` | crawl concurrency |
 | `SCRAPO_HTTP_RETRIES` | `2` | retries on 429/5xx/transport errors |
